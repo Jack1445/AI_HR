@@ -1,0 +1,3 @@
+[submodule "boss-cli"]
+	path = boss-cli
+	url = https://github.com/joohw/boss-cli.git
