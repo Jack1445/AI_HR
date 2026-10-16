@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+backend/.venv/
+backend/.pytest_cache/
+backend/data/
+
+# Node / frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+backend/.env
+boss-cli/.env
+
+# Runtime output
+*.log
+*.tmp
+*.tsbuildinfo
+
+# boss-cli local runtime (the source itself is tracked as a submodule)
+boss-cli/node_modules/
+boss-cli/dist/
+boss-cli/.cache/
+boss-cli/jd/
+
+# Editors and OS files
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

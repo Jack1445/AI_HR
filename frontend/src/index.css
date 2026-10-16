@@ -1,0 +1,61 @@
+:root {
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  color: #172033;
+  background: #f5f7fb;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: #172033;
+}
+
+.brand-mark {
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.app-content {
+  width: min(1120px, 100%);
+  margin: 0 auto;
+  padding: 64px 24px 40px;
+}
+
+.hero-copy {
+  max-width: 720px;
+  margin-bottom: 32px;
+}
+
+.hero-copy h1 {
+  margin-bottom: 12px;
+}
+
+.success-icon {
+  color: #16865c;
+  margin-right: 8px;
+}
+
+.app-footer {
+  text-align: center;
+  background: transparent;
+  color: #7d8799;
+}
