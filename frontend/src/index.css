@@ -54,6 +54,17 @@ body {
   margin-right: 8px;
 }
 
+.job-item {
+  cursor: pointer;
+  padding-inline: 12px !important;
+  border-radius: 8px;
+}
+
+.job-item:hover,
+.job-item-selected {
+  background: #eef5ff;
+}
+
 .app-footer {
   text-align: center;
   background: transparent;

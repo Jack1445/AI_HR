@@ -7,7 +7,8 @@ class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "INFO"
     database_url: str = "sqlite:///./data/ai_hr.db"
-    boss_cli_command: str = "boss"
+    boss_cli_command: str = "node"
+    boss_cli_entrypoint: str = "boss-cli/dist/cli/index.js"
     boss_cli_timeout_seconds: float = 120.0
     cors_origins: str = "http://localhost:5173"
 
