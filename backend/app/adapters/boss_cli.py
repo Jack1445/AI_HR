@@ -27,7 +27,7 @@ class BossCliAdapter:
     """Invoke boss-cli through a direct subprocess boundary.
 
     This adapter intentionally does not use a shell, retry silently, or invent a
-    fallback command. Stage 1 will add command-specific parsers on top of it.
+    fallback command. Command-specific parsers and write policies live above it.
     """
 
     def __init__(

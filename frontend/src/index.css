@@ -65,6 +65,10 @@ body {
   background: #eef5ff;
 }
 
+.detail-alert {
+  margin-top: 16px;
+}
+
 .app-footer {
   text-align: center;
   background: transparent;

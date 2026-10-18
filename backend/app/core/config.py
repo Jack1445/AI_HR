@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     boss_cli_command: str = "node"
     boss_cli_entrypoint: str = "boss-cli/dist/cli/index.js"
     boss_cli_timeout_seconds: float = 120.0
+    boss_enable_writes: bool = False
+    automation_emergency_stop: bool = False
+    data_dir: str = "data"
+    max_resume_bytes: int = 10 * 1024 * 1024
     cors_origins: str = "http://localhost:5173"
 
     model_config = SettingsConfigDict(

@@ -21,12 +21,39 @@ export interface Job {
 }
 
 export interface Candidate {
+  id?: string;
   name: string;
   job: string;
   time: string;
   message: string;
   unread_count: number;
 }
+
+export interface LocalCandidate {
+  id: string;
+  remote_id: string;
+  name: string;
+  stage: string;
+  owner: string;
+  favorite: boolean;
+  follow_up_at: string | null;
+  job_ids: string[];
+  job_titles: string[];
+  latest_message: string;
+  latest_time: string;
+  unread_count: number;
+  tags: string[];
+  updated_at: string;
+}
+
+export interface LocalCandidateListResponse { candidates: LocalCandidate[]; total: number; }
+export interface LocalJob { id: string; remote_id: string; title: string; status: string; label: string; meta: string[]; stats: Record<string, number>; updated_at: string; }
+export interface LocalJobListResponse { jobs: LocalJob[]; total: number; }
+export interface SyncResponse { sync_id: string; scope: string; status: string; records_seen: number; records_written: number; error_summary: string; }
+export interface CandidateDetail extends LocalCandidate { profile: Record<string, unknown>; notes: Array<Record<string, unknown>>; stage_history: Array<Record<string, unknown>>; timeline: Array<Record<string, unknown>>; }
+export interface MatchResult { analysis_id: string; candidate_id: string; job_id: string; provider: string; model: string; score: number; recommendation: string; must_haves: Array<Record<string, unknown>>; strengths: string[]; risks: string[]; questions: string[]; evidence: Array<Record<string, unknown>>; generated_at: string; }
+export interface ActionResponse { id: string; action_type: string; status: string; candidate_id: string; job_id: string | null; payload: Record<string, unknown>; result: Record<string, unknown>; created_by: string; confirmed_by: string; created_at: string; updated_at: string; }
+export interface AgentPolicy { read_scopes: string[]; write_scopes: string[]; writes_enabled: boolean; emergency_stop: boolean; confirmation_required: boolean; batch_limit: number; }
 
 export interface JobListResponse {
   jobs: Job[];
@@ -64,8 +91,21 @@ export async function fetchCandidates(jobId: string, signal?: AbortSignal): Prom
   );
 }
 
-async function fetchJson<T>(path: string, signal: AbortSignal | undefined, fallbackMessage: string): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, { signal });
+export async function fetchLocalJobs(signal?: AbortSignal): Promise<LocalJobListResponse> { return fetchJson<LocalJobListResponse>("/api/local/jobs", signal, "读取本地岗位失败"); }
+export async function fetchLocalCandidates(params: Record<string, string | undefined> = {}, signal?: AbortSignal): Promise<LocalCandidateListResponse> {
+  const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value) as [string, string][]).toString();
+  return fetchJson<LocalCandidateListResponse>(`/api/local/candidates${query ? `?${query}` : ""}`, signal, "读取本地候选人失败");
+}
+export async function syncLocal(scope = "all"): Promise<SyncResponse> { return fetchJson<SyncResponse>(`/api/local/sync?scope=${scope}`, undefined, "同步失败", { method: "POST" }); }
+export async function fetchCandidateDetail(id: string): Promise<CandidateDetail> { return fetchJson<CandidateDetail>(`/api/local/candidates/${encodeURIComponent(id)}`, undefined, "读取候选人详情失败"); }
+export async function updateCandidate(id: string, body: Record<string, unknown>): Promise<CandidateDetail> { return fetchJson<CandidateDetail>(`/api/local/candidates/${encodeURIComponent(id)}`, undefined, "更新候选人失败", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); }
+export async function matchCandidate(id: string, jobId: string): Promise<MatchResult> { return fetchJson<MatchResult>(`/api/candidates/${encodeURIComponent(id)}/match`, undefined, "匹配分析失败", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ job_id: jobId }) }); }
+export async function createAction(body: Record<string, unknown>): Promise<ActionResponse> { return fetchJson<ActionResponse>("/api/actions", undefined, "创建动作失败", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); }
+export async function confirmAction(id: string): Promise<ActionResponse> { return fetchJson<ActionResponse>(`/api/actions/${id}/confirm`, undefined, "确认动作失败", { method: "POST" }); }
+export async function fetchPolicy(): Promise<AgentPolicy> { return fetchJson<AgentPolicy>("/api/agent/policy", undefined, "读取策略失败"); }
+
+async function fetchJson<T>(path: string, signal: AbortSignal | undefined, fallbackMessage: string, init: RequestInit = {}): Promise<T> {
+  const response = await fetch(`${apiBaseUrl}${path}`, { ...init, signal });
   if (!response.ok) {
     let detail = "";
     try {
