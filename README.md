@@ -27,18 +27,34 @@ AI_HR/
 
 ## 本地启动
 
-要求：Python 3.11+、Node.js 20+、本机 Chrome/Chromium。先复制环境示例：
+要求：Python 3.11+、Node.js 20+、本机 Chrome/Chromium。先复制环境示例。
+
+PowerShell：
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-启动后端：
+Git Bash：
+
+```bash
+cp .env.example .env
+```
+
+PowerShell 启动后端：
 
 ```powershell
 py -3 -m venv .venv
 .\.venv\Scripts\python -m pip install -e "backend[dev]"
 .\.venv\Scripts\python -m uvicorn app.main:app --app-dir backend --reload --port 8000
+```
+
+Git Bash 启动后端：
+
+```bash
+python -m venv .venv
+./.venv/Scripts/python.exe -m pip install -e 'backend[dev]'
+./.venv/Scripts/python.exe -m uvicorn app.main:app --app-dir backend --reload --port 8000
 ```
 
 启动前端（另开一个终端）：
