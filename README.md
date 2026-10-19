@@ -58,6 +58,20 @@ npm run dev
 
 打开 <http://localhost:5173>；健康检查为 <http://localhost:8000/api/health>。后端从项目根目录启动，默认才能正确找到 `boss-cli/dist/cli/index.js`。首次使用 BOSS 前，在 `boss-cli/` 中执行 `npm install`、`npm run build`，再运行 `node dist/cli/index.js login` 完成人工登录。
 
+### 一键启动（PowerShell）
+
+以后可以直接在项目根目录运行：
+
+```powershell
+.\start-ai-hr.ps1
+```
+
+脚本会自动创建 `.env`（如果不存在），先清理 8000 和 5173 端口上的旧服务，再启动前后端，等待服务就绪，并优先使用已安装的 Google Chrome 打开 `http://localhost:5173`。也可以双击项目根目录中的 `start-ai-hr.bat` 启动。后端和前端窗口需要保持运行；停止服务时关闭这两个窗口即可。
+
+网页使用的 Chrome 只是打开 AI Recruiter 界面；BOSS 数据读取仍由 `boss-cli` 的 CDP Chrome 会话完成。该会话的 Cookie 保存在 `~/.boss-cli/.cache/browser-data`，首次同步时如果该会话尚未登录，需要在它打开的 Chrome 窗口中完成一次 BOSS 登录。
+
+网页“岗位”卡片中的“诊断同步”会沿用同一套只读同步流程，并把每个阶段的时间、进程号、工作目录、CLI 参数、退出码、耗时、标准输出和错误输出写入项目根目录的 `data/diagnostics/sync-*.log`。诊断失败时，页面错误提示会直接给出日志路径；日志只保存在本机，不包含浏览器 Cookie 或登录凭证。
+
 如果 PowerShell 中 `python` 不可用，请使用已创建环境的绝对路径；如果在 Git Bash 中启动，必须使用 `./.venv/Scripts/python.exe` 这种斜杠写法。
 
 ## 主要接口
@@ -79,7 +93,7 @@ npm run dev
 
 ## 数据和安全边界
 
-开发数据库由 Alembic revision `20261018_0001` 创建，应用启动时也会安全地补齐本地开发表。运行数据、简历文件、Cookie、联系方式和 `.env` 都被 `.gitignore` 排除。日志只记录命令错误摘要和审计元数据，不记录完整简历或登录凭证。
+开发数据库由 Alembic revision `20261018_0001` 创建，应用启动时也会安全地补齐本地开发表。运行数据、简历文件、Cookie、联系方式和 `.env` 都被 `.gitignore` 排除。常规应用日志只记录命令错误摘要和审计元数据；诊断同步日志会保存 CLI 的完整标准输出和错误输出，便于定位页面或登录问题，但不读取或写入浏览器 Cookie、密码等登录凭证。
 
 `boss-cli` 仍是独立 GPL-3.0 子模块，AI Recruiter 通过直接子进程适配器调用它，不复制其内部浏览器逻辑。BOSS 页面结构或登录状态变化时，只读同步会失败并保留已有本地数据；这类失败需要先在 `boss-cli` 中修复登录或页面访问，再重新同步。
 

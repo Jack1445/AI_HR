@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, or_, select
@@ -32,9 +34,11 @@ from app.schemas.local import (
     TagUpdate,
 )
 from app.services.boss_readonly import BossReadOnlyService
+from app.services.diagnostics import DiagnosticLog
 
 
 STAGES = ("new", "contacted", "communicating", "interview_pending", "interviewing", "decision", "offer", "hired", "rejected", "archived")
+LOGGER = logging.getLogger(__name__)
 
 
 def _fingerprint(*parts: str) -> str:
@@ -49,19 +53,29 @@ class LocalStoreService:
     def __init__(self, db: Session, boss: BossReadOnlyService | None = None) -> None:
         self.db = db
         self.boss = boss
+        self.diagnostic_log_path: str | None = None
 
     def _audit(self, event_type: str, target_type: str, target_id: str, detail: dict[str, Any], actor: str = "system") -> None:
         self.db.add(AuditEventRecord(actor=_actor(actor), event_type=event_type, target_type=target_type, target_id=target_id, detail_json=dumps(detail)))
 
-    async def sync(self, scope: str = "all") -> SyncResponse:
+    async def sync(self, scope: str = "all", diagnostic: bool = False) -> SyncResponse:
         if self.boss is None:
             raise RuntimeError("未配置 BOSS 只读服务")
+        diagnostic_log = DiagnosticLog.create() if diagnostic else None
+        self.diagnostic_log_path = str(diagnostic_log.path) if diagnostic_log else None
+        if diagnostic_log is not None:
+            diagnostic_log.write("sync.start", {"scope": scope, "cwd": str(Path.cwd())})
         run = SyncRunRecord(scope=scope, status="running")
         self.db.add(run)
         self.db.commit()
         seen = written = 0
         try:
-            remote_jobs = await self.boss.list_jobs()
+            remote_jobs = await self.boss.list_jobs(
+                debug=diagnostic,
+                diagnostic_log=diagnostic_log,
+            ) if diagnostic else await self.boss.list_jobs()
+            if diagnostic_log is not None:
+                diagnostic_log.write("sync.jobs_loaded", {"count": len(remote_jobs.jobs), "remote_total": remote_jobs.remote_total})
             for remote in remote_jobs.jobs:
                 seen += 1
                 job = self.db.scalar(select(JobRecord).where(JobRecord.remote_id == remote.id))
@@ -78,7 +92,13 @@ class LocalStoreService:
                 job.source_snapshot = dumps(remote.model_dump())
                 if scope == "jobs":
                     continue
-                candidates = await self.boss.list_candidates_for_job(remote.id)
+                candidates = await self.boss.list_candidates_for_job(
+                    remote.id,
+                    debug=diagnostic,
+                    diagnostic_log=diagnostic_log,
+                ) if diagnostic else await self.boss.list_candidates_for_job(remote.id)
+                if diagnostic_log is not None:
+                    diagnostic_log.write("sync.candidates_loaded", {"job_id": remote.id, "count": len(candidates.candidates)})
                 for item in candidates.candidates:
                     seen += 1
                     # boss-cli list output currently has no candidate ID. Keep
@@ -110,15 +130,28 @@ class LocalStoreService:
             run.finished_at = datetime.now(timezone.utc)
             self._audit("sync_completed", "sync_run", run.id, {"scope": scope, "records_seen": seen, "records_written": written})
             self.db.commit()
-            return SyncResponse(sync_id=run.id, scope=scope, status=run.status, records_seen=seen, records_written=written)
+            if diagnostic_log is not None:
+                diagnostic_log.write("sync.complete", {"sync_id": run.id, "records_seen": seen, "records_written": written})
+            return SyncResponse(sync_id=run.id, scope=scope, status=run.status, records_seen=seen, records_written=written, diagnostic_log=self.diagnostic_log_path)
         except Exception as exc:
             self.db.rollback()
+            error_text = str(exc).strip() or repr(exc)
+            error_summary = f"{type(exc).__name__}: {error_text}"[:2000]
+            if diagnostic_log is not None:
+                diagnostic_log.write("sync.failed", {"records_seen": seen, "records_written": written, "error": error_summary})
+            LOGGER.exception(
+                "BOSS sync failed: scope=%s records_seen=%s records_written=%s error=%s",
+                scope,
+                seen,
+                written,
+                error_summary,
+            )
             failed = self.db.get(SyncRunRecord, run.id)
             if failed is not None:
                 failed.status = "failed"
                 failed.records_seen = seen
                 failed.records_written = written
-                failed.error_summary = str(exc)[:2000]
+                failed.error_summary = error_summary
                 failed.finished_at = datetime.now(timezone.utc)
                 self._audit("sync_failed", "sync_run", run.id, {"scope": scope, "error": failed.error_summary})
                 self.db.commit()

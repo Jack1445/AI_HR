@@ -1,6 +1,10 @@
 import asyncio
+import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from app.services.diagnostics import DiagnosticLog
 
 
 class BossCliExecutionError(RuntimeError):
@@ -51,17 +55,39 @@ class BossCliAdapter:
             entrypoint = project_root / entrypoint
         return (self.command, str(entrypoint))
 
-    async def run(self, *args: str) -> BossCliResult:
+    async def run(
+        self,
+        *args: str,
+        debug: bool = False,
+        diagnostic_log: DiagnosticLog | None = None,
+    ) -> BossCliResult:
         invocation = self.invocation
         async with self._lock:
+            started_at = time.monotonic()
+            if diagnostic_log is not None:
+                diagnostic_log.write(
+                    "cli.start",
+                    {
+                        "invocation": [*invocation, *args],
+                        "cwd": str(Path.cwd()),
+                        "debug": debug,
+                    },
+                )
+            environment = None
+            if debug:
+                environment = os.environ.copy()
+                environment["BOSS_CLI_DEBUG"] = "true"
             try:
                 process = await asyncio.create_subprocess_exec(
                     *invocation,
                     *args,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    env=environment,
                 )
             except FileNotFoundError as exc:
+                if diagnostic_log is not None:
+                    diagnostic_log.write("cli.spawn_failed", {"error": repr(exc)})
                 raise BossCliCommandNotFoundError(
                     f"无法启动 boss-cli：找不到可执行文件“{self.command}”"
                 ) from exc
@@ -72,6 +98,11 @@ class BossCliAdapter:
             except asyncio.TimeoutError as exc:
                 process.kill()
                 await process.communicate()
+                if diagnostic_log is not None:
+                    diagnostic_log.write(
+                        "cli.timeout",
+                        {"timeout_seconds": self.timeout_seconds, "elapsed_seconds": time.monotonic() - started_at},
+                    )
                 raise BossCliTimeoutError(
                     f"boss-cli command timed out after {self.timeout_seconds:.1f}s: {' '.join((*invocation, *args))}"
                 ) from exc
@@ -82,6 +113,16 @@ class BossCliAdapter:
                 stderr=stderr_bytes.decode("utf-8", errors="replace"),
                 returncode=process.returncode or 0,
             )
+            if diagnostic_log is not None:
+                diagnostic_log.write(
+                    "cli.complete",
+                    {
+                        "returncode": result.returncode,
+                        "elapsed_seconds": time.monotonic() - started_at,
+                        "stdout": result.stdout,
+                        "stderr": result.stderr,
+                    },
+                )
         if result.returncode != 0:
             detail = result.stderr.strip() or result.stdout.strip() or "no output"
             raise BossCliExecutionError(

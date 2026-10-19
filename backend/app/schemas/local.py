@@ -11,6 +11,7 @@ class SyncResponse(BaseModel):
     records_seen: int = 0
     records_written: int = 0
     error_summary: str = ""
+    diagnostic_log: str | None = None
 
 
 class LocalJob(BaseModel):

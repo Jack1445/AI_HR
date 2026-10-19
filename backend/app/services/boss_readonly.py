@@ -10,6 +10,7 @@ from app.schemas.recruiting import (
     JobListResponse,
     JobStats,
 )
+from app.services.diagnostics import DiagnosticLog
 
 
 @lru_cache(maxsize=1)
@@ -26,8 +27,16 @@ class BossReadOnlyService:
     def __init__(self, adapter: BossCliAdapter) -> None:
         self.adapter = adapter
 
-    async def list_jobs(self) -> JobListResponse:
-        result = await self.adapter.run("positions")
+    async def list_jobs(
+        self,
+        *,
+        debug: bool = False,
+        diagnostic_log: DiagnosticLog | None = None,
+    ) -> JobListResponse:
+        if debug or diagnostic_log is not None:
+            result = await self.adapter.run("positions", debug=debug, diagnostic_log=diagnostic_log)
+        else:
+            result = await self.adapter.run("positions")
         parsed = parse_positions(result.stdout)
         jobs = [
             Job(
@@ -44,21 +53,35 @@ class BossReadOnlyService:
             )
             for item in parsed.jobs
         ]
+        if diagnostic_log is not None:
+            diagnostic_log.write(
+                "jobs.parsed",
+                {"job_count": len(jobs), "remote_total": parsed.remote_total},
+            )
         return JobListResponse(jobs=jobs, remote_total=parsed.remote_total)
 
-    async def list_candidates_for_job(self, job_id: str) -> CandidateListResponse:
-        jobs = await self.list_jobs()
+    async def list_candidates_for_job(
+        self,
+        job_id: str,
+        *,
+        debug: bool = False,
+        diagnostic_log: DiagnosticLog | None = None,
+    ) -> CandidateListResponse:
+        jobs = await self.list_jobs(debug=debug, diagnostic_log=diagnostic_log)
         job = next((item for item in jobs.jobs if item.id == job_id), None)
         if job is None:
             raise LookupError(f"未找到岗位 ID：{job_id}")
-        result = await self.adapter.run("list")
+        if debug or diagnostic_log is not None:
+            result = await self.adapter.run("list", debug=debug, diagnostic_log=diagnostic_log)
+        else:
+            result = await self.adapter.run("list")
         parsed = parse_candidates(result.stdout)
         matching = [
             item
             for item in parsed.candidates
             if item.job.strip() == job.title.strip()
         ]
-        return CandidateListResponse(
+        response = CandidateListResponse(
             job_id=job.id,
             job_title=job.title,
             candidates=[
@@ -74,3 +97,9 @@ class BossReadOnlyService:
             remote_total=len(matching),
             unread_total=sum(item.unread_count > 0 for item in matching),
         )
+        if diagnostic_log is not None:
+            diagnostic_log.write(
+                "candidates.parsed",
+                {"job_id": job_id, "candidate_count": len(response.candidates)},
+            )
+        return response

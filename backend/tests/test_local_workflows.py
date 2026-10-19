@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -13,10 +15,10 @@ from app.core.config import Settings
 
 
 class FakeBoss:
-    async def list_jobs(self):
+    async def list_jobs(self, **kwargs):
         return JobListResponse(jobs=[Job(id="remote-job", title="Python 工程师", status="active", label="", meta=["Python"], stats=JobStats(viewed=1, chatted=1, interested=0))], remote_total=1)
 
-    async def list_candidates_for_job(self, job_id: str):
+    async def list_candidates_for_job(self, job_id: str, **kwargs):
         return CandidateListResponse(job_id=job_id, job_title="Python 工程师", candidates=[Candidate(name="张三", job="Python 工程师", time="刚刚", message="熟悉 Python", unread_count=1)], remote_total=1, unread_total=1)
 
 
@@ -42,6 +44,24 @@ def test_sync_is_idempotent_and_preserves_local_stage() -> None:
     assert db.query(JobRecord).count() == 1
     assert db.query(CandidateRecord).count() == 1
     assert db.scalar(select(CandidateRecord).where(CandidateRecord.id == candidate.id)).stage == "interviewing"
+
+
+def test_diagnostic_sync_writes_trace_file(tmp_path, monkeypatch) -> None:
+    from app.services import diagnostics
+
+    monkeypatch.setattr(diagnostics, "get_settings", lambda: Settings(data_dir=str(tmp_path)))
+    db = make_db()
+    service = LocalStoreService(db, FakeBoss())
+    import asyncio
+
+    result = asyncio.run(service.sync(diagnostic=True))
+    assert result.status == "success"
+    assert result.diagnostic_log is not None
+    log_path = Path(result.diagnostic_log)
+    assert log_path.exists()
+    contents = log_path.read_text(encoding="utf-8")
+    assert '"event": "sync.start"' in contents
+    assert '"event": "sync.complete"' in contents
 
 
 def test_confirmed_boss_action_is_blocked_by_default() -> None:

@@ -22,15 +22,23 @@ def map_sync_error(error: Exception) -> HTTPException:
         return HTTPException(status_code=504, detail=str(error))
     if isinstance(error, (BossCliCommandNotFoundError, BossCliExecutionError, BossCliOutputError)):
         return HTTPException(status_code=502, detail=str(error))
-    return HTTPException(status_code=500, detail="同步招聘数据时发生未分类错误")
+    detail = str(error).strip() or repr(error)
+    return HTTPException(status_code=500, detail=f"同步招聘数据时发生未分类错误：{detail[:1000]}")
 
 
 @router.post("/sync", response_model=SyncResponse)
-async def sync(scope: str = Query(default="all", pattern="^(all|jobs)$"), svc: LocalStoreService = Depends(service)) -> SyncResponse:
+async def sync(
+    scope: str = Query(default="all", pattern="^(all|jobs)$"),
+    diagnostic: bool = Query(default=False),
+    svc: LocalStoreService = Depends(service),
+) -> SyncResponse:
     try:
-        return await svc.sync(scope)
+        return await svc.sync(scope, diagnostic=diagnostic)
     except Exception as error:
-        raise map_sync_error(error) from error
+        mapped = map_sync_error(error)
+        if svc.diagnostic_log_path:
+            mapped.detail = f"{mapped.detail}；诊断日志：{svc.diagnostic_log_path}"
+        raise mapped from error
 
 
 @router.get("/jobs", response_model=LocalJobListResponse)

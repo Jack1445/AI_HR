@@ -25,7 +25,8 @@ def map_boss_error(error: Exception) -> HTTPException:
         return HTTPException(status_code=504, detail=str(error))
     if isinstance(error, (BossCliExecutionError, BossCliOutputError)):
         return HTTPException(status_code=502, detail=str(error))
-    return HTTPException(status_code=500, detail="读取招聘数据时发生未分类错误")
+    detail = str(error).strip() or repr(error)
+    return HTTPException(status_code=500, detail=f"读取招聘数据时发生未分类错误：{detail[:1000]}")
 
 
 @router.get("/jobs", response_model=JobListResponse)

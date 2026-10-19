@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Alert, Button, Card, Col, Descriptions, Empty, Input, Layout, List, Row, Select, Space, Spin, Statistic, Table, Tag, Typography, message,
 } from "antd";
-import { CheckCircleOutlined, ReloadOutlined, SafetyOutlined, SyncOutlined } from "@ant-design/icons";
+import { BugOutlined, CheckCircleOutlined, ReloadOutlined, SafetyOutlined, SyncOutlined } from "@ant-design/icons";
 import {
   confirmAction, createAction, fetchCandidateDetail, fetchCandidates, fetchHealth, fetchJobs, fetchLocalCandidates, fetchLocalJobs, fetchPolicy, matchCandidate, syncLocal, updateCandidate,
   type ActionResponse, type AgentPolicy, type Candidate, type CandidateDetail, type HealthResponse, type Job, type LocalCandidate, type LocalJob, type MatchResult,
@@ -24,6 +24,7 @@ function App() {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [diagnosing, setDiagnosing] = useState(false);
   const [candidateLoading, setCandidateLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [action, setAction] = useState<ActionResponse | null>(null);
@@ -63,6 +64,16 @@ function App() {
     try { const result = await syncLocal(); message.success(`同步完成：写入 ${result.records_written} 条`); await loadOverview(); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "同步失败"); }
     finally { setSyncing(false); }
+  };
+
+  const runDiagnosticSync = async () => {
+    setDiagnosing(true); setError(null);
+    try {
+      const result = await syncLocal("all", { diagnostic: true });
+      message.success(`诊断完成，日志：${result.diagnostic_log ?? "data/diagnostics"}`);
+      await loadOverview();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "诊断同步失败"); }
+    finally { setDiagnosing(false); }
   };
 
   const selectCandidate = async (candidate: LocalCandidate) => {
@@ -111,7 +122,7 @@ function App() {
       <div className="hero-copy"><Typography.Title level={1}>招聘工作台</Typography.Title><Typography.Paragraph>先同步到本地，再在候选人详情中做标注、匹配和人工确认动作。</Typography.Paragraph></div>
       {error && <Alert closable onClose={() => setError(null)} message={error} type="warning" showIcon />}
       <Row gutter={[20, 20]}>
-        <Col xs={24} lg={8}><Card title="岗位" extra={<Space><Button size="small" icon={<SyncOutlined />} loading={syncing} onClick={() => void runSync()}>同步</Button><Button size="small" icon={<ReloadOutlined />} onClick={() => void loadOverview()}>刷新</Button></Space>}>
+        <Col xs={24} lg={8}><Card title="岗位" extra={<Space><Button size="small" icon={<SyncOutlined />} loading={syncing} disabled={diagnosing} onClick={() => void runSync()}>同步</Button><Button size="small" icon={<BugOutlined />} loading={diagnosing} disabled={syncing} onClick={() => void runDiagnosticSync()}>诊断同步</Button><Button size="small" icon={<ReloadOutlined />} onClick={() => void loadOverview()}>刷新</Button></Space>}>
           {loading ? <Spin /> : displayJobs.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无岗位，请先确认 BOSS 已登录" /> : <List<LocalJob | Job> dataSource={displayJobs} renderItem={(job) => <List.Item className={selectedJob && selectedJob.id === job.id ? "job-item job-item-selected" : "job-item"} onClick={() => void selectJob(job)}><Space direction="vertical" size={2}><Typography.Text strong>{job.title}</Typography.Text><Typography.Text type="secondary">{job.status}{job.label ? ` · ${job.label}` : ""}</Typography.Text></Space></List.Item>} />}
         </Card></Col>
         <Col xs={24} lg={16}><Card title="运行状态" extra={<SafetyOutlined />}><Row gutter={24}><Col><Statistic title="后端" value={health?.status === "ok" ? "正常" : "未知"} prefix={<CheckCircleOutlined />} /></Col><Col><Statistic title="岗位" value={localJobs.length || remoteJobs.length} /></Col><Col><Statistic title="本地候选人" value={localCandidates.length} /></Col></Row><Typography.Text type="secondary">{health ? `${health.service} · v${health.version}` : "正在连接…"}</Typography.Text></Card></Col>

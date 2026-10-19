@@ -49,7 +49,7 @@ export interface LocalCandidate {
 export interface LocalCandidateListResponse { candidates: LocalCandidate[]; total: number; }
 export interface LocalJob { id: string; remote_id: string; title: string; status: string; label: string; meta: string[]; stats: Record<string, number>; updated_at: string; }
 export interface LocalJobListResponse { jobs: LocalJob[]; total: number; }
-export interface SyncResponse { sync_id: string; scope: string; status: string; records_seen: number; records_written: number; error_summary: string; }
+export interface SyncResponse { sync_id: string; scope: string; status: string; records_seen: number; records_written: number; error_summary: string; diagnostic_log?: string | null; }
 export interface CandidateDetail extends LocalCandidate { profile: Record<string, unknown>; notes: Array<Record<string, unknown>>; stage_history: Array<Record<string, unknown>>; timeline: Array<Record<string, unknown>>; }
 export interface MatchResult { analysis_id: string; candidate_id: string; job_id: string; provider: string; model: string; score: number; recommendation: string; must_haves: Array<Record<string, unknown>>; strengths: string[]; risks: string[]; questions: string[]; evidence: Array<Record<string, unknown>>; generated_at: string; }
 export interface ActionResponse { id: string; action_type: string; status: string; candidate_id: string; job_id: string | null; payload: Record<string, unknown>; result: Record<string, unknown>; created_by: string; confirmed_by: string; created_at: string; updated_at: string; }
@@ -96,7 +96,11 @@ export async function fetchLocalCandidates(params: Record<string, string | undef
   const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value) as [string, string][]).toString();
   return fetchJson<LocalCandidateListResponse>(`/api/local/candidates${query ? `?${query}` : ""}`, signal, "读取本地候选人失败");
 }
-export async function syncLocal(scope = "all"): Promise<SyncResponse> { return fetchJson<SyncResponse>(`/api/local/sync?scope=${scope}`, undefined, "同步失败", { method: "POST" }); }
+export async function syncLocal(scope = "all", options: { diagnostic?: boolean } = {}): Promise<SyncResponse> {
+  const query = new URLSearchParams({ scope });
+  if (options.diagnostic) query.set("diagnostic", "true");
+  return fetchJson<SyncResponse>(`/api/local/sync?${query.toString()}`, undefined, "同步失败", { method: "POST" });
+}
 export async function fetchCandidateDetail(id: string): Promise<CandidateDetail> { return fetchJson<CandidateDetail>(`/api/local/candidates/${encodeURIComponent(id)}`, undefined, "读取候选人详情失败"); }
 export async function updateCandidate(id: string, body: Record<string, unknown>): Promise<CandidateDetail> { return fetchJson<CandidateDetail>(`/api/local/candidates/${encodeURIComponent(id)}`, undefined, "更新候选人失败", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); }
 export async function matchCandidate(id: string, jobId: string): Promise<MatchResult> { return fetchJson<MatchResult>(`/api/candidates/${encodeURIComponent(id)}/match`, undefined, "匹配分析失败", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ job_id: jobId }) }); }
