@@ -4,8 +4,8 @@ import {
 } from "antd";
 import { BugOutlined, CheckCircleOutlined, ReloadOutlined, SafetyOutlined, SyncOutlined } from "@ant-design/icons";
 import {
-  confirmAction, createAction, fetchCandidateDetail, fetchCandidates, fetchHealth, fetchJobs, fetchLocalCandidates, fetchLocalJobs, fetchPolicy, matchCandidate, syncLocal, updateCandidate,
-  type ActionResponse, type AgentPolicy, type Candidate, type CandidateDetail, type HealthResponse, type Job, type LocalCandidate, type LocalJob, type MatchResult,
+  confirmAction, createAction, fetchCandidateDetail, fetchCandidates, fetchDebugStatus, fetchHealth, fetchJobs, fetchLocalCandidates, fetchLocalJobs, fetchPolicy, matchCandidate, syncLocal, updateCandidate,
+  type ActionResponse, type AgentPolicy, type Candidate, type CandidateDetail, type DebugStatus, type HealthResponse, type Job, type LocalCandidate, type LocalJob, type MatchResult,
 } from "./api";
 
 const { Header, Content, Footer } = Layout;
@@ -25,6 +25,10 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [diagnosing, setDiagnosing] = useState(false);
+  const [diagnosticLogPath, setDiagnosticLogPath] = useState<string | null>(null);
+  const [debugStatus, setDebugStatus] = useState<DebugStatus | null>(null);
+  const [debugLoading, setDebugLoading] = useState(false);
+  const [syncDebug, setSyncDebug] = useState<Record<string, unknown> | null>(null);
   const [candidateLoading, setCandidateLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [action, setAction] = useState<ActionResponse | null>(null);
@@ -33,17 +37,33 @@ function App() {
 
   const loadOverview = async () => {
     setLoading(true); setError(null);
-    const [healthResult, remoteResult, localResult, policyResult] = await Promise.allSettled([fetchHealth(), fetchJobs(), fetchLocalJobs(), fetchPolicy()]);
+    const [healthResult, remoteResult, localResult, policyResult, debugResult] = await Promise.allSettled([fetchHealth(), fetchJobs(), fetchLocalJobs(), fetchPolicy(), fetchDebugStatus()]);
     if (healthResult.status === "fulfilled") setHealth(healthResult.value);
     if (remoteResult.status === "fulfilled") setRemoteJobs(remoteResult.value.jobs);
     if (localResult.status === "fulfilled") setLocalJobs(localResult.value.jobs);
     if (policyResult.status === "fulfilled") setPolicy(policyResult.value);
+    if (debugResult.status === "fulfilled") setDebugStatus(debugResult.value);
     const failed = [healthResult, remoteResult, localResult, policyResult].find((result) => result.status === "rejected");
     if (failed?.status === "rejected") setError(failed.reason instanceof Error ? failed.reason.message : "部分数据读取失败");
     setLoading(false);
   };
 
   useEffect(() => { void loadOverview(); }, []);
+
+  const refreshDebug = async () => {
+    setDebugLoading(true);
+    try { setDebugStatus(await fetchDebugStatus()); }
+    catch (reason) { setSyncDebug((current) => ({ ...(current ?? {}), debug_refresh_error: reason instanceof Error ? reason.message : "读取调试状态失败" })); }
+    finally { setDebugLoading(false); }
+  };
+
+  const syncErrorText = (reason: unknown) => reason instanceof Error ? reason.message : "同步失败";
+
+  const diagnosticPathFromError = (reason: unknown) => {
+    const text = syncErrorText(reason);
+    const match = text.match(/诊断日志：(.+)$/);
+    return match?.[1]?.trim() || null;
+  };
 
   const selectJob = async (job: LocalJob | Job) => {
     setSelectedJob(job); setSelectedCandidate(null); setMatch(null); setCandidateLoading(true); setError(null);
@@ -60,19 +80,41 @@ function App() {
   };
 
   const runSync = async () => {
-    setSyncing(true); setError(null);
-    try { const result = await syncLocal(); message.success(`同步完成：写入 ${result.records_written} 条`); await loadOverview(); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "同步失败"); }
+    const startedAt = new Date().toISOString();
+    setSyncing(true); setError(null); setSyncDebug({ phase: "sync.start", mode: "normal", scope: "all", started_at: startedAt });
+    try {
+      const result = await syncLocal();
+      setSyncDebug({ phase: "sync.complete", mode: "normal", scope: result.scope, started_at: startedAt, finished_at: new Date().toISOString(), response: result });
+      message.success(`同步完成：写入 ${result.records_written} 条`);
+      await Promise.all([loadOverview(), refreshDebug()]);
+    }
+    catch (reason) {
+      const errorText = syncErrorText(reason);
+      setSyncDebug({ phase: "sync.failed", mode: "normal", scope: "all", started_at: startedAt, finished_at: new Date().toISOString(), error: errorText });
+      setError(errorText);
+      await refreshDebug();
+    }
     finally { setSyncing(false); }
   };
 
   const runDiagnosticSync = async () => {
-    setDiagnosing(true); setError(null);
+    const startedAt = new Date().toISOString();
+    setDiagnosing(true); setError(null); setDiagnosticLogPath(null); setSyncDebug({ phase: "sync.start", mode: "diagnostic", scope: "all", started_at: startedAt });
     try {
       const result = await syncLocal("all", { diagnostic: true });
-      message.success(`诊断完成，日志：${result.diagnostic_log ?? "data/diagnostics"}`);
-      await loadOverview();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "诊断同步失败"); }
+      const logPath = result.diagnostic_log ?? "data/diagnostics";
+      setDiagnosticLogPath(logPath);
+      setSyncDebug({ phase: "sync.complete", mode: "diagnostic", scope: result.scope, started_at: startedAt, finished_at: new Date().toISOString(), response: result });
+      message.success("诊断完成，日志已保存");
+      await Promise.all([loadOverview(), refreshDebug()]);
+    } catch (reason) {
+      const errorText = syncErrorText(reason);
+      const logPath = diagnosticPathFromError(reason);
+      if (logPath) setDiagnosticLogPath(logPath);
+      setSyncDebug({ phase: "sync.failed", mode: "diagnostic", scope: "all", started_at: startedAt, finished_at: new Date().toISOString(), error: errorText, diagnostic_log: logPath });
+      setError(errorText);
+      await refreshDebug();
+    }
     finally { setDiagnosing(false); }
   };
 
@@ -121,6 +163,7 @@ function App() {
     <Content className="app-content">
       <div className="hero-copy"><Typography.Title level={1}>招聘工作台</Typography.Title><Typography.Paragraph>先同步到本地，再在候选人详情中做标注、匹配和人工确认动作。</Typography.Paragraph></div>
       {error && <Alert closable onClose={() => setError(null)} message={error} type="warning" showIcon />}
+      {diagnosticLogPath && <Alert closable onClose={() => setDiagnosticLogPath(null)} message="诊断日志已保存" description={diagnosticLogPath} type="info" showIcon />}
       <Row gutter={[20, 20]}>
         <Col xs={24} lg={8}><Card title="岗位" extra={<Space><Button size="small" icon={<SyncOutlined />} loading={syncing} disabled={diagnosing} onClick={() => void runSync()}>同步</Button><Button size="small" icon={<BugOutlined />} loading={diagnosing} disabled={syncing} onClick={() => void runDiagnosticSync()}>诊断同步</Button><Button size="small" icon={<ReloadOutlined />} onClick={() => void loadOverview()}>刷新</Button></Space>}>
           {loading ? <Spin /> : displayJobs.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无岗位，请先确认 BOSS 已登录" /> : <List<LocalJob | Job> dataSource={displayJobs} renderItem={(job) => <List.Item className={selectedJob && selectedJob.id === job.id ? "job-item job-item-selected" : "job-item"} onClick={() => void selectJob(job)}><Space direction="vertical" size={2}><Typography.Text strong>{job.title}</Typography.Text><Typography.Text type="secondary">{job.status}{job.label ? ` · ${job.label}` : ""}</Typography.Text></Space></List.Item>} />}
@@ -131,6 +174,19 @@ function App() {
         </Card></Col>
         {selectedCandidate && <Col xs={24} lg={10}><Card title={`${selectedCandidate.name} · 候选人详情`} extra={<Tag color="blue">{selectedCandidate.stage}</Tag>}><Descriptions column={1} size="small"><Descriptions.Item label="岗位">{selectedCandidate.job_titles.join("、") || "未绑定"}</Descriptions.Item><Descriptions.Item label="负责人">{selectedCandidate.owner || "未分配"}</Descriptions.Item><Descriptions.Item label="标签">{selectedCandidate.tags.join("、") || "暂无"}</Descriptions.Item><Descriptions.Item label="最近消息">{selectedCandidate.latest_message || "暂无"}</Descriptions.Item></Descriptions><Space wrap><Button onClick={() => void runMatch()} disabled={!selectedJob || !("remote_id" in selectedJob)}>生成匹配建议</Button><Button onClick={() => void draftMessage()}>生成消息草稿</Button></Space>{match && <Alert className="detail-alert" message={`匹配分 ${match.score} · ${match.recommendation}`} description={<Space direction="vertical"><Typography.Text>优势：{match.strengths.join("；") || "暂无充分证据"}</Typography.Text><Typography.Text>风险：{match.risks.join("；") || "暂无"}</Typography.Text><Typography.Text>待确认：{match.questions.join("；") || "暂无"}</Typography.Text></Space>} type="info" showIcon />}{action && <Alert className="detail-alert" message={`动作草稿：${action.status}`} description={<Space direction="vertical"><Typography.Text>{String(action.payload.text ?? "")}</Typography.Text><Button size="small" type="primary" disabled={action.status !== "pending_confirmation"} onClick={() => void confirmDraft()}>人工确认</Button></Space>} type={action.status === "blocked" ? "warning" : "success"} />}</Card></Col>}
         <Col xs={24}><Card title="安全边界"><Space direction="vertical"><Typography.Text>✓ 同步、标签、备注、阶段和匹配结果保存在本地数据库</Typography.Text><Typography.Text>✓ AI 输出标注证据与未知项，只作为人工参考</Typography.Text><Typography.Text>✓ BOSS 写动作必须先生成草稿，再人工确认；默认开关关闭</Typography.Text></Space></Card></Col>
+        <Col xs={24}><Card title="调试信息" extra={<Button size="small" icon={<ReloadOutlined />} loading={debugLoading} onClick={() => void refreshDebug()}>刷新调试状态</Button>}>
+          <Descriptions size="small" column={2} bordered>
+            <Descriptions.Item label="前端同步状态">{String(syncDebug?.phase ?? "idle")}</Descriptions.Item>
+            <Descriptions.Item label="后端进程">{debugStatus ? `PID ${debugStatus.runtime.pid} · Python ${debugStatus.runtime.python}` : "未知"}</Descriptions.Item>
+            <Descriptions.Item label="后端版本">{health?.version ?? "未知"}</Descriptions.Item>
+            <Descriptions.Item label="BOSS CLI">{debugStatus ? `${debugStatus.config.boss_cli_command} · ${debugStatus.config.boss_cli_entrypoint_exists ? "入口存在" : "入口不存在"}` : "未知"}</Descriptions.Item>
+            <Descriptions.Item label="工作目录">{debugStatus?.runtime.cwd ?? "未知"}</Descriptions.Item>
+            <Descriptions.Item label="最近同步">{debugStatus?.latest_sync ? `${debugStatus.latest_sync.status} · 已看 ${debugStatus.latest_sync.records_seen} · 写入 ${debugStatus.latest_sync.records_written}` : "暂无"}</Descriptions.Item>
+            <Descriptions.Item label="诊断日志">{debugStatus?.diagnostics.latest_log ?? diagnosticLogPath ?? "暂无"}</Descriptions.Item>
+            <Descriptions.Item label="最近错误">{debugStatus?.latest_sync?.error_summary || "无"}</Descriptions.Item>
+          </Descriptions>
+          <pre className="debug-output">{JSON.stringify({ sync: syncDebug, backend: debugStatus }, null, 2)}</pre>
+        </Card></Col>
       </Row>
     </Content><Footer className="app-footer">AI Recruiter · 本地数据可追踪 · {new Date().getFullYear()}</Footer>
   </Layout>;

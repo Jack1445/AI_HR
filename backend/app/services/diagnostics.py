@@ -20,7 +20,10 @@ class DiagnosticLog:
 
     @classmethod
     def create(cls) -> "DiagnosticLog":
-        root = Path(get_settings().data_dir) / "diagnostics"
+        data_root = Path(get_settings().data_dir)
+        if not data_root.is_absolute():
+            data_root = Path(__file__).resolve().parents[3] / data_root
+        root = data_root / "diagnostics"
         root.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
         return cls(root / f"sync-{stamp}-{uuid.uuid4().hex[:8]}.log")

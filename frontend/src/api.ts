@@ -50,6 +50,34 @@ export interface LocalCandidateListResponse { candidates: LocalCandidate[]; tota
 export interface LocalJob { id: string; remote_id: string; title: string; status: string; label: string; meta: string[]; stats: Record<string, number>; updated_at: string; }
 export interface LocalJobListResponse { jobs: LocalJob[]; total: number; }
 export interface SyncResponse { sync_id: string; scope: string; status: string; records_seen: number; records_written: number; error_summary: string; diagnostic_log?: string | null; }
+export interface DebugEvent { time?: string; pid?: number; event?: string; details?: Record<string, unknown>; }
+export interface DebugStatus {
+  server_time: string;
+  runtime: { pid: number; python: string; platform: string; cwd: string };
+  config: {
+    boss_cli_command: string;
+    boss_cli_entrypoint: string;
+    boss_cli_entrypoint_resolved: string;
+    boss_cli_entrypoint_exists: boolean;
+    boss_cli_timeout_seconds: number;
+    boss_enable_writes: boolean;
+    automation_emergency_stop: boolean;
+    data_dir: string;
+    data_dir_exists: boolean;
+    database_kind: string;
+  };
+  latest_sync: {
+    id: string;
+    scope: string;
+    status: string;
+    started_at: string;
+    finished_at: string | null;
+    records_seen: number;
+    records_written: number;
+    error_summary: string;
+  } | null;
+  diagnostics: { latest_log: string | null; events: DebugEvent[]; read_error?: string };
+}
 export interface CandidateDetail extends LocalCandidate { profile: Record<string, unknown>; notes: Array<Record<string, unknown>>; stage_history: Array<Record<string, unknown>>; timeline: Array<Record<string, unknown>>; }
 export interface MatchResult { analysis_id: string; candidate_id: string; job_id: string; provider: string; model: string; score: number; recommendation: string; must_haves: Array<Record<string, unknown>>; strengths: string[]; risks: string[]; questions: string[]; evidence: Array<Record<string, unknown>>; generated_at: string; }
 export interface ActionResponse { id: string; action_type: string; status: string; candidate_id: string; job_id: string | null; payload: Record<string, unknown>; result: Record<string, unknown>; created_by: string; confirmed_by: string; created_at: string; updated_at: string; }
@@ -107,6 +135,7 @@ export async function matchCandidate(id: string, jobId: string): Promise<MatchRe
 export async function createAction(body: Record<string, unknown>): Promise<ActionResponse> { return fetchJson<ActionResponse>("/api/actions", undefined, "创建动作失败", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); }
 export async function confirmAction(id: string): Promise<ActionResponse> { return fetchJson<ActionResponse>(`/api/actions/${id}/confirm`, undefined, "确认动作失败", { method: "POST" }); }
 export async function fetchPolicy(): Promise<AgentPolicy> { return fetchJson<AgentPolicy>("/api/agent/policy", undefined, "读取策略失败"); }
+export async function fetchDebugStatus(): Promise<DebugStatus> { return fetchJson<DebugStatus>("/api/debug/status", undefined, "读取调试状态失败"); }
 
 async function fetchJson<T>(path: string, signal: AbortSignal | undefined, fallbackMessage: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, { ...init, signal });

@@ -97,11 +97,16 @@ class BossCliAdapter:
                 )
             except asyncio.TimeoutError as exc:
                 process.kill()
-                await process.communicate()
+                stdout_bytes, stderr_bytes = await process.communicate()
                 if diagnostic_log is not None:
                     diagnostic_log.write(
                         "cli.timeout",
-                        {"timeout_seconds": self.timeout_seconds, "elapsed_seconds": time.monotonic() - started_at},
+                        {
+                            "timeout_seconds": self.timeout_seconds,
+                            "elapsed_seconds": time.monotonic() - started_at,
+                            "stdout": stdout_bytes.decode("utf-8", errors="replace"),
+                            "stderr": stderr_bytes.decode("utf-8", errors="replace"),
+                        },
                     )
                 raise BossCliTimeoutError(
                     f"boss-cli command timed out after {self.timeout_seconds:.1f}s: {' '.join((*invocation, *args))}"
