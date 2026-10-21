@@ -21,7 +21,7 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="AI Recruiter API",
-    version="0.2.2",
+    version="0.2.4",
     description="只读优先的招聘管理后端。",
 )
 

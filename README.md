@@ -21,7 +21,7 @@ AI Recruiter 是一个基于 `boss-cli` 的本地招聘工作台。最终版本�
 AI_HR/
 ├── backend/                 # FastAPI、SQLAlchemy、Alembic 和业务服务
 ├── frontend/                # React + TypeScript + Vite + Ant Design
-├── boss-cli/                # https://github.com/joohw/boss-cli.git 子模块
+├── boss-cli/                # Jack1445/boss-cli 子模块，包含本项目验证过的修复
 ├── docs/                    # boss-cli 调研和集成边界
 └── AI_Recruiter_项目开发计划.md
 ```
@@ -29,6 +29,8 @@ AI_HR/
 ## 环境和启动
 
 要求 Python 3.11+、Node.js 20+、本机 Chrome/Chromium。项目使用根目录 `.venv`，不需要 conda。
+
+首次克隆主项目时使用 `git clone --recurse-submodules`；已有项目拉取更新后，运行 `git submodule sync --recursive` 和 `git submodule update --init --recursive`，再在 `boss-cli/` 中安装依赖并构建。子模块固定到 [Jack1445/boss-cli](https://github.com/Jack1445/boss-cli) 中验证过的提交，上游为 [joohw/boss-cli](https://github.com/joohw/boss-cli)。
 
 PowerShell：
 
@@ -71,6 +73,24 @@ npm run dev
 网页使用的 Chrome 只是打开 AI Recruiter 界面；BOSS 数据读取仍由 `boss-cli` 的 CDP Chrome 会话完成。该会话的 Cookie 保存在 `~/.boss-cli/.cache/browser-data`，首次同步时如果该会话尚未登录，需要在它打开的 Chrome 窗口中完成一次 BOSS 登录。
 
 网页“岗位”卡片中的“诊断同步”会沿用同一套只读同步流程，并把每个阶段的时间、进程号、工作目录、CLI 参数、退出码、耗时、标准输出和错误输出写入项目根目录的 `data/diagnostics/sync-*.log`。诊断失败时，页面错误提示会直接给出日志路径；日志只保存在本机，不包含浏览器 Cookie 或登录凭证。
+
+### 分段耗时诊断（后端 v0.2.4）
+
+重启 `start-ai-hr.bat`，确认网页后端版本为 `0.2.4`，再点击“诊断同步”。同步期间，“调试信息”每两秒刷新各步骤的状态和耗时；日志实时写入，不必等整个 CLI 退出后才能定位等待位置。
+
+网页打开、刷新和选择岗位只读取本地快照；点击“同步”或“诊断同步”才读取 BOSS 最新数据。首次使用没有本地数据时，页面提示先同步，避免网页的自动岗位读取占用浏览器，让手动同步长时间排队。
+
+直接调用只读 API 的 CLI 请求也会生成 `data/diagnostics/cli-*.log`。排队日志会记录当时占用执行锁的命令 ID 和日志路径；调试信息显示当前执行命令，便于追查多个窗口或外部请求造成的竞争。共享浏览器仍按顺序操作。
+
+- 普通同步也保存轻量计时日志，仅记录步骤、时间、进程和数据量；诊断同步额外保存完整 CLI 输出，日志可能包含候选人资料，应只留在本机。
+- 记录后端队列等待、CLI 启动、首次数据输出、软件更新检查、会话锁、连接浏览器、页面初始化、导航、固定等待、列表就绪、文字提取、输出解析、数据库保存、断开连接以及清理后等待进程退出的耗时。
+- `cli.update_check` 是 boss-cli 自身的 npm 版本检查，不是 BOSS 数据读取，也不自动安装更新。
+- 每条日志顶层 `elapsed_seconds` 表示距本次同步开始的时间；`details.elapsed_seconds` 表示该步骤的耗时。`command_id` 关联同一个 CLI 调用，`span_id` 关联同一个步骤的开始与结束。
+- 网页耗时表可点击耗时列排序。父步骤包含子步骤，不能将各行简单相加；以 `sync.total` 为整个同步耗时。超时会保留部分输出和最后一个未完成步骤。
+
+这些埋点仅用于测量，不改变上游等待时间、更新检查或页面导航行为。再次构建 `boss-cli` 时应保留本地计时补丁。
+
+2026-10-21 已修复 boss-cli 首次启动 Chrome 后遗留 stdout/stderr 管道，导致 CLI 读完岗位仍不退出、后续请求排队直到 120 秒超时的问题。修复前后证据及独立浏览器回归测试见 [同步排队与 CLI 退出故障](docs/diagnostic-run-20261021.md)。
 
 如果 PowerShell 中 `python` 不可用，请使用已创建环境的绝对路径；如果在 Git Bash 中启动，必须使用 `./.venv/Scripts/python.exe` 这种斜杠写法。
 

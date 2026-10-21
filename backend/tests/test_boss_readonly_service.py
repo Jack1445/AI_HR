@@ -8,7 +8,7 @@ class FakeBossCli:
     def __init__(self) -> None:
         self.calls: list[tuple[str, ...]] = []
 
-    async def run(self, *args: str) -> BossCliResult:
+    async def run(self, *args: str, **kwargs) -> BossCliResult:
         self.calls.append(tuple(args))
         if args == ("positions",):
             output = """已读取 2 个职位（页面统计：共 2 个）。
@@ -34,3 +34,35 @@ def test_service_filters_candidates_by_selected_job_title() -> None:
     assert response.job_title == "AI产品经理"
     assert [candidate.name for candidate in response.candidates] == ["张三"]
     assert adapter.calls == [("positions",), ("list",)]
+
+
+def test_sync_reads_one_snapshot_for_all_jobs_and_keeps_job_associations() -> None:
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from app.db.base import Base
+    from app.services.local_store import LocalStoreService
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    adapter = FakeBossCli()
+    with Session(engine) as db:
+        store = LocalStoreService(db, BossReadOnlyService(adapter))
+        result = asyncio.run(store.sync())
+        assert result.status == "success"
+        assert adapter.calls == [("positions",), ("list",)]
+        associations = {
+            job.title: [c.name for c in store.list_candidates(job_id=job.id).candidates]
+            for job in store.list_jobs().jobs
+        }
+        assert associations == {"AI产品经理": ["张三"], "后端工程师": ["李四"]}
+
+        adapter.calls.clear()
+        asyncio.run(store.sync(scope="jobs"))
+        assert adapter.calls == [("positions",)]
+
+
+def test_empty_jobs_do_not_read_communication_list() -> None:
+    adapter = FakeBossCli()
+    service = BossReadOnlyService(adapter)
+    assert asyncio.run(service.list_candidates_for_jobs([])) == {}
+    assert adapter.calls == []

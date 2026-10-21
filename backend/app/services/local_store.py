@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -61,21 +62,34 @@ class LocalStoreService:
     async def sync(self, scope: str = "all", diagnostic: bool = False) -> SyncResponse:
         if self.boss is None:
             raise RuntimeError("未配置 BOSS 只读服务")
-        diagnostic_log = DiagnosticLog.create() if diagnostic else None
+        diagnostic_log = DiagnosticLog.create()
         self.diagnostic_log_path = str(diagnostic_log.path) if diagnostic_log else None
         if diagnostic_log is not None:
-            diagnostic_log.write("sync.start", {"scope": scope, "cwd": str(Path.cwd())})
+            diagnostic_log.write("sync.start", {"scope": scope, "cwd": str(Path.cwd()), "debug": diagnostic})
         run = SyncRunRecord(scope=scope, status="running")
         self.db.add(run)
         self.db.commit()
+        diagnostic_log.write("sync.created", {"sync_id": run.id})
         seen = written = 0
         try:
+            phase_start = time.monotonic()
+            diagnostic_log.write("sync.jobs_start")
             remote_jobs = await self.boss.list_jobs(
                 debug=diagnostic,
                 diagnostic_log=diagnostic_log,
-            ) if diagnostic else await self.boss.list_jobs()
+            )
             if diagnostic_log is not None:
-                diagnostic_log.write("sync.jobs_loaded", {"count": len(remote_jobs.jobs), "remote_total": remote_jobs.remote_total})
+                diagnostic_log.write("sync.jobs_loaded", {"count": len(remote_jobs.jobs), "remote_total": remote_jobs.remote_total, "elapsed_seconds": time.monotonic() - phase_start})
+            candidates_by_job = {}
+            if scope != "jobs":
+                phase_start = time.monotonic()
+                diagnostic_log.write("sync.candidates_start")
+                candidates_by_job = await self.boss.list_candidates_for_jobs(
+                    remote_jobs.jobs, debug=diagnostic, diagnostic_log=diagnostic_log
+                )
+                diagnostic_log.write("sync.candidates_complete", {"elapsed_seconds": time.monotonic() - phase_start})
+            phase_start = time.monotonic()
+            diagnostic_log.write("sync.database_start")
             for remote in remote_jobs.jobs:
                 seen += 1
                 job = self.db.scalar(select(JobRecord).where(JobRecord.remote_id == remote.id))
@@ -92,11 +106,7 @@ class LocalStoreService:
                 job.source_snapshot = dumps(remote.model_dump())
                 if scope == "jobs":
                     continue
-                candidates = await self.boss.list_candidates_for_job(
-                    remote.id,
-                    debug=diagnostic,
-                    diagnostic_log=diagnostic_log,
-                ) if diagnostic else await self.boss.list_candidates_for_job(remote.id)
+                candidates = candidates_by_job[remote.id]
                 if diagnostic_log is not None:
                     diagnostic_log.write("sync.candidates_loaded", {"job_id": remote.id, "count": len(candidates.candidates)})
                 for item in candidates.candidates:
@@ -130,6 +140,7 @@ class LocalStoreService:
             run.finished_at = datetime.now(timezone.utc)
             self._audit("sync_completed", "sync_run", run.id, {"scope": scope, "records_seen": seen, "records_written": written})
             self.db.commit()
+            diagnostic_log.write("sync.database_complete", {"elapsed_seconds": time.monotonic() - phase_start})
             if diagnostic_log is not None:
                 diagnostic_log.write("sync.complete", {"sync_id": run.id, "records_seen": seen, "records_written": written})
             return SyncResponse(sync_id=run.id, scope=scope, status=run.status, records_seen=seen, records_written=written, diagnostic_log=self.diagnostic_log_path)

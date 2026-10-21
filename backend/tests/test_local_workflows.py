@@ -15,6 +15,9 @@ from app.core.config import Settings
 
 
 class FakeBoss:
+    async def list_candidates_for_jobs(self, jobs, **kwargs):
+        return {job.id: await self.list_candidates_for_job(job.id) for job in jobs}
+
     async def list_jobs(self, **kwargs):
         return JobListResponse(jobs=[Job(id="remote-job", title="Python 工程师", status="active", label="", meta=["Python"], stats=JobStats(viewed=1, chatted=1, interested=0))], remote_total=1)
 
