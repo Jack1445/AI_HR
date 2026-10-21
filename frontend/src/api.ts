@@ -43,6 +43,11 @@ export interface LocalCandidate {
   latest_time: string;
   unread_count: number;
   tags: string[];
+  communication_status: 'unknown' | 'outgoing' | 'incoming' | 'mutual';
+  communication_checked_at: string | null;
+  communication_evidence: { recruiter_sent: boolean; candidate_sent: boolean; request_resume_enabled: boolean | null; mutual_reply_required: boolean; attachment_present: boolean } | null;
+  communication_error: string;
+  communication_stale: boolean;
   updated_at: string;
 }
 
@@ -139,6 +144,19 @@ export async function confirmAction(id: string): Promise<ActionResponse> { retur
 export async function fetchPolicy(): Promise<AgentPolicy> { return fetchJson<AgentPolicy>("/api/agent/policy", undefined, "读取策略失败"); }
 export async function fetchDebugStatus(signal?: AbortSignal): Promise<DebugStatus> { return fetchJson<DebugStatus>("/api/debug/status", signal, "读取调试状态失败"); }
 
+export interface OnlineResumeScreenshot { id: string; image_url: string; captured_at: string; }
+export interface RecommendedPerson { id: string; source_job: string; online_resume?: OnlineResumeScreenshot | null; geekId: string; name: string; salary: string; baseInfo: string; expect: string; experience: string; advantage: string; highlights: string[]; canGreet: boolean; hasHistoryChat: boolean; hasViewed: boolean; }
+export interface RecommendationSnapshot { job_label: string; limit: number; candidates: RecommendedPerson[]; captured_at: string | null; stop_reason?: string; }
+export interface RecommendationReadResult extends RecommendationSnapshot { added_ids: string[]; }
+export interface RecycledRecommendation { id: string; name: string; baseInfo: string; }
+export interface RecommendationRecycleBin { candidates: RecycledRecommendation[]; }
+export async function fetchRecommendationRecycleBin(signal?: AbortSignal): Promise<RecommendationRecycleBin> { return fetchJson<RecommendationRecycleBin>('/api/local/recommendations/recycle-bin', signal, '读取回收站失败'); }
+export async function allowRecommendationAgain(id: string): Promise<void> { return fetchJson<void>(`/api/local/recommendations/recycle-bin/${encodeURIComponent(id)}/restore`, undefined, '允许重新读取失败', { method: 'POST' }); }
+export async function fetchRecommendations(signal?: AbortSignal): Promise<RecommendationSnapshot> { return fetchJson<RecommendationSnapshot>('/api/local/recommendations', signal, '读取本地推荐快照失败'); }
+export async function readRecommendations(): Promise<RecommendationReadResult> { return fetchJson<RecommendationReadResult>('/api/local/recommendations/read', undefined, '推荐读取失败', { method: 'POST' }); }
+export async function deleteRecommendation(id: string): Promise<void> { return fetchJson<void>(`/api/local/recommendations/${encodeURIComponent(id)}`, undefined, '删除失败', { method: 'DELETE' }); }
+export async function verifyCommunications(ids: string[]): Promise<LocalCandidateListResponse> { return fetchJson<LocalCandidateListResponse>('/api/local/communications/verify', undefined, '核验沟通状态失败', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ candidate_ids: ids }) }); }
+
 async function fetchJson<T>(path: string, signal: AbortSignal | undefined, fallbackMessage: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, { ...init, signal });
   if (!response.ok) {
@@ -151,5 +169,8 @@ async function fetchJson<T>(path: string, signal: AbortSignal | undefined, fallb
     }
     throw new Error(detail ? `${fallbackMessage}：${detail}` : `${fallbackMessage}（HTTP ${response.status}）`);
   }
-  return (await response.json()) as T;
+  return response.status === 204 ? undefined as T : (await response.json()) as T;
 }
+
+export async function captureRecommendedResume(geekId: string, candidateId: string): Promise<OnlineResumeScreenshot> { return fetchJson<OnlineResumeScreenshot>('/api/local/recommendations/resume', undefined, '读取在线简历失败', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ geek_id: geekId, candidate_id: candidateId }) }); }
+export function resumeScreenshotUrl(screenshot: OnlineResumeScreenshot): string { return `${apiBaseUrl}${screenshot.image_url}`; }

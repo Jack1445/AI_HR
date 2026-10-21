@@ -10,6 +10,7 @@ from app.api.routes.resumes import router as resumes_router
 from app.api.routes.agent import router as agent_router
 from app.api.routes.admin import router as admin_router
 from app.api.routes.debug import router as debug_router
+from app.api.routes.discovery import router as discovery_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.base import Base
@@ -21,7 +22,7 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="AI Recruiter API",
-    version="0.2.4",
+    version="0.2.9",
     description="只读优先的招聘管理后端。",
 )
 
@@ -42,3 +43,4 @@ app.include_router(resumes_router)
 app.include_router(agent_router)
 app.include_router(admin_router)
 app.include_router(debug_router)
+app.include_router(discovery_router)

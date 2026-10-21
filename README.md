@@ -96,12 +96,37 @@ npm run dev
 
 ## 主要接口
 
+### 沟通分类与推荐牛人（v0.2.5）
+
+#### 推荐人才库与在线简历截图（v0.2.9）
+
+- 推荐名单持续积累。点击“新增10人（含简历）”先按“姓名＋基本信息”联合查重（只规范化空白），两个字段都相同才跳过；同名但基本信息不同会分别保存。
+- 每次只新增最多10人并依次截图，旧记录与截图保留。CLI 不足时向下滚动查找，最多15次滚动、连续3次无新卡片即停止，不足10人按实际人数保存，不会无限抓取。只有点击按钮才启动。
+- 本地使用独立 `recommended_candidates` 表及联合字段哈希唯一约束。首次访问自动迁入旧快照和关联截图，保留原始快照；无法恢复此前已被覆盖且未保存的历史名单。
+- 表格列为姓名、基本信息、期望职位、期望薪资、契合程度（暂空）、标签、在线简历，按每页10人显示；末尾垃圾桶将人选移入回收站，只保留姓名＋基本信息用于联合查重，清理当前库中的其他资料及其独占截图。回收站入口在新增按钮旁，支持搜索；每行提供“允许重新读取”，只解除该姓名＋基本信息的排除记录，下次手动新增并再次遇到此人时才重新入库和截图；不会立即抓取或恢复已删除的截图，不影响 BOSS。
+- `GET /api/local/recommendations/recycle-bin` 只返回回收站的内部编号、姓名和基本信息。已删除人选与现有名单共同组成 CLI 查重列表，后端入库时再次拦截相同双字段。
+- `POST /api/local/recommendations/recycle-bin/{identity_key}/restore` 解除这一条回收站排除记录。仅操作本地数据库，沿用手动读取互斥锁；同名但基本信息不同的其他排除记录保持不变。
+- 行内“读取在线简历”“重新读取”保留供单独重试，失败保留旧图。批量只处理本次 `added_ids`，不重复打开已有人员简历；请保持网页打开直到完成。
+- 截图保存在 `data/recommended-resumes/`，支持缩略图、放大查看、下载，不调用 OCR、不上传第三方、不打招呼。
+- `GET /api/local/recommendations` 返回累计本地名单；`POST /api/local/recommendations/read` 返回累计名单及本次 `added_ids`；`DELETE /api/local/recommendations/{id}` 删除本地记录。截图接口传 `geek_id` 与本地 `candidate_id` 精确关联行。
+- 迁移 `20261021_0004` 新增人才库表，`20261021_0005` 新增最小回收站表（开发启动自动补齐）；历史软删除自动迁入回收站并清理当前库中的冗余资料。构建 boss-cli 并启动 v0.2.9 后端。验证：`pytest backend/tests -q`、`node boss-cli/scripts/test-discovery.mjs`、`node frontend/scripts/test-recommendation-batch.mjs`。
+
+- 工作台右侧按“我已招呼·对方未回”“对方招呼·我未回”“双方已沟通”筛选。首次同步的旧数据缺少双向消息证据，显示“待核验”，不根据未读数或最近一句消息猜测。
+- 点击“核验当前页（最多10人）”，才打开这一页的 BOSS 会话，读取消息方向与求简历入口。打开会话可能被 BOSS 标记为已读。不会发送消息、请求附件或加载历史分页。每人的证据、核验时间和失败原因保存在本地，点姓名可查看；同步发现消息/时间变化时重新标为待核验。
+- “双方已沟通”表示已有双方消息或申请简历的入口可用，不表示附件已收到。附件卡片与申请入口的检测结果单独展示；本功能不下载附件。
+- 顶部“推荐牛人”是独立页面。先在 BOSS 推荐页选好岗位，再点击“手动读取10人（含简历）”。每次最多新增10位未重复人选，随后逐人定位并截图；不足10人按实际数量保存，不打招呼。
+- 打开推荐页面、切换分类、刷新网页和普通同步都不触发推荐读取。GET 只加载本地缓存；成功读取的人选累积到独立推荐人才库，不混入沟通候选人库；失败时保留已有记录。
+- 本地需要重新构建 `boss-cli`（`npm --prefix boss-cli run build`）并重启后端；启动器期望后端版本为 `0.2.9`。推荐缓存使用独立表，迁移版本 `20261021_0002`；开发启动也会自动补齐该表。
+- 验证：`node boss-cli/scripts/test-discovery.mjs` 使用合成卡片，验证先截断再提取、10人硬上限、单方/双方证据和歧义处理，不连接真实 BOSS。
+
 | 目的 | 接口 |
 | --- | --- |
 | 健康检查 | `GET /api/health` |
 | BOSS 只读岗位/候选人 | `GET /api/jobs`、`GET /api/jobs/{job_id}/candidates` |
 | 同步到本地 | `POST /api/local/sync?scope=all` |
 | 本地候选人 | `GET/PATCH /api/local/candidates`、`GET /api/local/candidates/{id}` |
+| 手动核验最多10人 | `POST /api/local/communications/verify`，请求体 `{ "candidate_ids": ["本地ID"] }` |
+| 推荐牛人缓存 / 手动试读 | `GET /api/local/recommendations`、`POST /api/local/recommendations/read`（固定最多10人） |
 | 标签、备注、时间线 | `/api/local/candidates/{id}/tags`、`/notes`、`/timeline` |
 | 匹配建议 | `POST /api/candidates/{id}/match` |
 | 受控动作 | `POST /api/actions`、`/{id}/confirm`、`/{id}/cancel` |

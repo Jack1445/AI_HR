@@ -48,6 +48,40 @@ class CandidateRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
 
+class RecommendationSnapshotRecord(Base):
+    """A separate, bounded cache; recommendation cards never become chat candidates."""
+    __tablename__ = 'recommendation_snapshots'
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    snapshot_json: Mapped[str] = mapped_column(Text)
+
+
+class RecommendedResumeRecord(Base):
+    __tablename__ = 'recommended_resumes'
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    geek_id: Mapped[str] = mapped_column(String(255), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+
+class RecommendedCandidateRecord(Base):
+    __tablename__ = 'recommended_candidates'
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    identity_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    person_json: Mapped[str] = mapped_column(Text)
+    source_job: Mapped[str] = mapped_column(Text, default='')
+    screenshot_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RecommendationRecycleRecord(Base):
+    """Minimal compound identity retained to exclude deleted recommendations."""
+    __tablename__ = 'recommendation_recycle_bin'
+    identity_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(Text)
+    base_info: Mapped[str] = mapped_column(Text)
+
+
 class JobCandidateRecord(Base):
     __tablename__ = "job_candidates"
     __table_args__ = (UniqueConstraint("job_id", "candidate_id", name="uq_job_candidate"),)

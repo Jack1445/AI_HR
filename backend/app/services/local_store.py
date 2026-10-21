@@ -207,7 +207,18 @@ class LocalStoreService:
         jobs = [self.db.get(JobRecord, relation.job_id) for relation in relations]
         tags = self.db.scalars(select(TagRecord.name).join(CandidateTagRecord, CandidateTagRecord.tag_id == TagRecord.id).where(CandidateTagRecord.candidate_id == row.id)).all()
         latest = relations[0] if relations else None
-        return LocalCandidate(id=row.id, remote_id=row.remote_id, name=row.name, stage=row.stage, owner=row.owner, favorite=row.favorite, follow_up_at=row.follow_up_at, job_ids=[job.id for job in jobs if job], job_titles=[job.title for job in jobs if job], latest_message=latest.last_message if latest else "", latest_time=latest.remote_time if latest else "", unread_count=latest.unread_count if latest else 0, tags=list(tags), updated_at=row.updated_at)
+        communication = loads(row.profile_json, {}).get('communication', {})
+        stale = bool(communication.get('evidence')) and (
+            communication.get('message', '') != (latest.last_message if latest else '') or
+            communication.get('time', '') != (latest.remote_time if latest else ''))
+        # No stable remote message IDs yet: conservatively recheck changed
+        # message/time snapshots, even when the displayed time is relative.
+        return LocalCandidate(id=row.id, remote_id=row.remote_id, name=row.name, stage=row.stage, owner=row.owner, favorite=row.favorite, follow_up_at=row.follow_up_at, job_ids=[job.id for job in jobs if job], job_titles=[job.title for job in jobs if job], latest_message=latest.last_message if latest else "", latest_time=latest.remote_time if latest else "", unread_count=latest.unread_count if latest else 0, tags=list(tags), updated_at=row.updated_at,
+            communication_status='unknown' if stale else communication.get('status', 'unknown'),
+            communication_checked_at=communication.get('checked_at'),
+            communication_evidence=communication.get('evidence'),
+            communication_error='消息或时间已变化，请重新核验' if stale else communication.get('error', ''),
+            communication_stale=stale)
 
     def detail(self, candidate_id: str) -> CandidateDetail:
         row = self.db.get(CandidateRecord, candidate_id)

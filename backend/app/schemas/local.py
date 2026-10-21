@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
+from app.schemas.discovery import CommunicationStatus, CommunicationEvidence
 
 
 class SyncResponse(BaseModel):
@@ -44,6 +45,11 @@ class LocalCandidate(BaseModel):
     latest_time: str = ""
     unread_count: int = 0
     tags: list[str] = []
+    communication_status: CommunicationStatus = 'unknown'
+    communication_checked_at: datetime | None = None
+    communication_evidence: CommunicationEvidence | None = None
+    communication_error: str = ''
+    communication_stale: bool = False
     updated_at: datetime
 
 
