@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 from app.adapters.boss_cli import BossCliResult
 from app.services.boss_readonly import BossReadOnlyService
@@ -16,6 +17,11 @@ class FakeBossCli:
 1. AI产品经理｜状态:开放中｜标签:急招｜本科｜3-5年｜北京｜看过我:12｜沟通过:4｜感兴趣:2｜ID:10001
 2. 后端工程师｜状态:待开放｜标签:｜本科｜1-3年｜上海｜看过我:3｜沟通过:1｜感兴趣:0｜ID:10002
 """
+        elif '--history' in args:
+            output = json.dumps({"version": 1, "since": args[args.index('--since') + 1] if '--since' in args else None, "stop_reason": "stable_bottom", "scanned": 2, "undated": 0, "rows": [
+                {"sourceId": "100-0", "legacyMatchUnique": True, "name": "张三", "job": "AI产品经理", "time": "10:30", "message": "您好", "unreadCount": 2},
+                {"sourceId": "200-0", "legacyMatchUnique": True, "name": "李四", "job": "后端工程师", "time": "昨天", "message": "感谢", "unreadCount": 0},
+            ]})
         else:
             output = """沟通列表共 2 人，其中 1 人有未读消息。
 候选人明细：
@@ -49,7 +55,8 @@ def test_sync_reads_one_snapshot_for_all_jobs_and_keeps_job_associations() -> No
         store = LocalStoreService(db, BossReadOnlyService(adapter))
         result = asyncio.run(store.sync())
         assert result.status == "success"
-        assert adapter.calls == [("positions",), ("list",)]
+        assert adapter.calls == [("positions",), ("list", "--history", "--json")]
+        assert len(result.verification_ids) == 2
         associations = {
             job.title: [c.name for c in store.list_candidates(job_id=job.id).candidates]
             for job in store.list_jobs().jobs

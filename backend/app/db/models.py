@@ -82,6 +82,47 @@ class RecommendationRecycleRecord(Base):
     base_info: Mapped[str] = mapped_column(Text)
 
 
+class RecommendationJobRecord(Base):
+    __tablename__ = 'recommendation_jobs'
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    label: Mapped[str] = mapped_column(Text)
+    available: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class RecommendationRecycleJobRecord(Base):
+    __tablename__ = 'recommendation_recycle_jobs'
+    identity_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(64), index=True)
+
+
+class TableWorkspaceRecord(Base):
+    __tablename__ = 'table_workspaces'
+    scope: Mapped[str] = mapped_column(String(32), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    config_json: Mapped[str] = mapped_column(Text)
+
+
+class TableCellRecord(Base):
+    __tablename__ = 'table_cells'
+    scope: Mapped[str] = mapped_column(String(32), primary_key=True)
+    record_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    field_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value_json: Mapped[str] = mapped_column(Text)
+
+
+class RecommendationFirstCaptureRecord(Base):
+    __tablename__ = 'recommendation_first_captures'
+    candidate_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CommunicationRecycleRecord(Base):
+    __tablename__ = 'communication_recycle_bin'
+    remote_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    name: Mapped[str] = mapped_column(Text)
+    source_job: Mapped[str] = mapped_column(Text, default='')
+
+
 class JobCandidateRecord(Base):
     __tablename__ = "job_candidates"
     __table_args__ = (UniqueConstraint("job_id", "candidate_id", name="uq_job_candidate"),)

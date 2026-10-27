@@ -9,6 +9,26 @@ from app.api.routes.debug import _summarize_log
 from app.services.diagnostics import DiagnosticLog
 
 
+def test_failure_banner_excludes_timing_but_log_keeps_diagnostics(tmp_path):
+    from app.adapters.boss_cli import BossCliExecutionError, cli_error_detail
+    trace = DiagnosticLog(tmp_path / 'failed.log')
+    script = tmp_path / 'failed_cli.py'
+    script.write_text('''import json, sys
+for i in range(100):
+    print('[boss-cli][timing] ' + json.dumps({'stage': 'candidates.history', 'status': 'start', 'span_id': str(i)}), file=sys.stderr)
+print('Actual scrolling container failure', file=sys.stderr)
+sys.exit(1)
+''', encoding='utf-8')
+    with pytest.raises(BossCliExecutionError) as error:
+        asyncio.run(BossCliAdapter(sys.executable, str(script)).run('list', diagnostic_log=trace))
+    assert 'Actual scrolling container failure' in str(error.value)
+    assert '[timing]' not in str(error.value)
+    assert len(str(error.value)) < 150
+    saved = trace.path.read_text(encoding='utf-8')
+    assert 'cli.timing' in saved and 'Actual scrolling container failure' in saved
+    assert len(cli_error_detail('x' * 5000, '')) < 1300
+
+
 def test_timing_is_visible_before_cli_exits_and_output_is_preserved(tmp_path):
     trace = DiagnosticLog(tmp_path / "trace.log")
     script = tmp_path / "fake_cli.py"

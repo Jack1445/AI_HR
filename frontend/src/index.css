@@ -45,6 +45,12 @@ button:focus-visible, a:focus-visible { outline: 3px solid #92cdbb; outline-offs
 .recommendations-heading p { color: #74877b; font-size: 13px; line-height: 1.8; }
 .recommendations-notice { background: #eef7f2; padding: 13px 26px; color: #36765b; font-size: 12px; line-height: 1.8; }
 .recommendations-meta { padding: 22px 26px 0; display: flex; gap: 12px; flex-wrap: wrap; justify-content: space-between; font-size: 12px; color: #6d8273; }
+.recommendation-job-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 0 26px 22px; }
+.recommendation-job-picker { flex: 1; min-width: 260px; max-width: 720px; }
+.recommendation-job-picker > .section-kicker { display: block; margin-bottom: 7px; }
+.recommendation-job-picker .ant-select { width: 100%; }
+.recommendation-job-bar > .ant-btn { margin-top: 19px; }
+.recommendation-job-hint { width: 100%; font-size: 11px; color: #85988c; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
 .eyebrow { color: #809289; font-size: 10px; font-weight: 600; letter-spacing: 1.8px; margin-bottom: 9px; }
 h1 { margin: 0 0 9px; font-size: 27px; line-height: 1.4; font-weight: 650; letter-spacing: -.6px; color: #243c34; }
@@ -161,3 +167,82 @@ h2, h3 { margin: 0; }
 .recycle-bin-feedback { margin-bottom: 16px; }
 .resume-image-viewer { max-height: 68vh; overflow: auto; border: 1px solid #e1e8e3; background: #f4f6f5; border-radius: 8px; }
 @media (max-width:760px) { .recommendation-table { padding: 16px 10px 0; } .recommendations-heading { padding: 20px; } }
+
+/* Shared database table workspace */
+.managed-table { min-width: 0; padding: 0 22px; }
+.candidates-panel .managed-table { padding: 0 16px; }
+.table-view-bar, .managed-toolbar, .managed-table-footer, .table-selection-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.table-view-bar { padding: 12px 0; border-bottom: 1px solid #eaf0ec; color: #377d69; }
+.table-view-bar .ant-select-selector { font-weight: 600; border-color: transparent !important; box-shadow: none !important; background: #f3f8f5 !important; }
+.table-save-status { font-size: 11px; color: #83968c; }
+.managed-toolbar { padding: 12px 0; }
+.managed-toolbar .ant-btn { font-size: 12px; }
+.managed-search { max-width: 210px; }
+.managed-table .managed-data-table { padding: 0; }
+.managed-data-table .ant-table { font-size: 12px; }
+.managed-data-table .ant-table-cell { padding: 12px 10px !important; overflow-wrap: anywhere; }
+.managed-data-table .ant-table-thead th { font-weight: 600; background: #f3f6f4; border-bottom: 1px solid #e4ece6; }
+.managed-data-table .ant-table-container { border: 1px solid #e5ece7; border-radius: 8px; overflow: hidden; }
+.managed-column-title { position: relative; display: flex; align-items: center; gap: 5px; min-height: 22px; }
+.column-edit-mark { color: #a5b6ad; font-size: 10px; }
+.column-resizer { position: absolute; right: -10px; top: -12px; bottom: -12px; width: 8px; cursor: col-resize; touch-action: none; z-index: 3; border-right: 2px solid transparent; }
+.column-resizer:hover, .column-resizer:active { border-color: #7cb29c; background: #d6e9df; }
+.table-readonly-value { white-space: pre-wrap; line-height: 1.8; color: #60766a; }
+.retrieval-date { color: #60786a; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.editable-table-cell { display: block; text-align: left; border: 1px solid transparent; background: transparent; width: 100%; min-height: 32px; padding: 5px 7px; border-radius: 5px; cursor: text; color: #36594a; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+.editable-table-cell:hover:not(:disabled), .editable-table-cell:focus-visible { border-color: #bfd6c8; background: #f6faf7; outline: none; }
+.editable-table-cell:disabled { cursor: default; }
+.cell-placeholder { color: #b4c2ba; }
+.inline-cell-editor { min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 5px; border: 1px solid #b4d0c0; border-radius: 7px; background: white; }
+.inline-cell-editor > .ant-space { justify-content: flex-end; }
+.inline-cell-editor .ant-select { min-width: 0; }
+.table-drag-handle { display: inline-flex; justify-content: center; align-items: center; border: 0; background: transparent; padding: 4px; cursor: grab; color: #a2b4a9; border-radius: 3px; }
+.table-drag-handle:active { cursor: grabbing; }
+.table-drag-handle:disabled { opacity: .3; cursor: default; }
+.table-row-dragging { opacity: .4; }
+.table-group-row > td { background: #edf5ef !important; }
+.table-group-toggle { display: flex; align-items: center; gap: 12px; border: 0; background: transparent; color: #436453; cursor: pointer; font: inherit; text-align: left; width: 100%; }
+.table-group-row .ant-checkbox { visibility: hidden; }
+.table-selection-bar { padding: 9px 12px; border: 1px solid #cee4d6; border-radius: 7px; background: #eff8f1; color: #35775c; font-size: 12px; margin: 0 0 10px; }
+.managed-table-footer { color: #96a69c; font-size: 11px; padding: 12px 0 16px; }
+.table-error { margin-bottom: 12px; }
+.table-help { color: #7b9083; font-size: 12px; line-height: 1.9; margin: 0 0 18px; }
+.table-settings-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 11px; color: #8b9d91; padding: 8px 0; }
+.field-config-head { display: grid; grid-template-columns: 1fr 82px 100px 44px; padding: 8px 0 8px 57px; gap: 8px; font-size: 11px; color: #98a69e; }
+.field-config-item { border-bottom: 1px solid #edf1ee; padding: 9px 0; }
+.field-config-row { display: grid; grid-template-columns: 21px 18px minmax(100px, 1fr) 82px 100px 44px; align-items: center; gap: 8px; }
+.field-config-row .ant-input { background: #fafcfb; border-color: transparent; }
+.field-config-row .ant-input:hover, .field-config-row .ant-input:focus { border-color: #bdd9ca; }
+.field-config-row .ant-input-number { width: 82px; }
+.system-field-tag { font-size: 10px; margin: 0; color: #9aa69f; border-color: #edf0ee; text-align: center; }
+.field-type-line { display: flex; align-items: center; gap: 12px; padding: 5px 0 0 57px; font-size: 11px; color: #94a59b; }
+.field-type-line .ant-select { flex: 1; }
+.new-field-form { display: flex; flex-direction: column; align-items: stretch; gap: 12px; background: #f4f8f5; border: 1px dashed #cbded0; border-radius: 9px; padding: 18px; margin: 22px 0; }
+.new-field-form > strong { font-size: 12px; color: #4f7860; }
+.new-field-form > .ant-btn { align-self: flex-start; }
+.table-rule { display: grid; grid-template-columns: 135px 125px 1fr 32px; gap: 8px; margin: 14px 0; }
+.table-rule.sort-rule { grid-template-columns: 22px 1fr 160px 32px; align-items: center; color: #91a397; }
+.communication-read-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+@media (max-width: 760px) {
+  .managed-table, .candidates-panel .managed-table { padding: 0 10px; }
+  .managed-search { max-width: 100%; }
+  .table-save-status { display: none; }
+  .field-config-row { grid-template-columns: 18px 18px minmax(70px, 1fr) 65px 75px 32px; gap: 4px; }
+  .field-config-row .ant-input-number { width: 65px; }
+  .table-rule { grid-template-columns: 1fr 1fr; }
+}
+
+.resume-thumbnail-status { display: flex; flex-direction: column; align-items: center; gap: 4px; max-width: 72px; }
+.resume-image-warning { color: #b56a22; font-size: 10px; line-height: 1.4; text-align: center; }
+
+.recycle-batch-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 12px 14px; margin: 12px 0; border: 1px solid #dfebe5; border-radius: 9px; background: #f3f8f5; }
+
+.workspace-task-progress { display: grid; gap: 6px; padding: 16px 20px; margin: 0 0 20px; border: 1px solid #dcebe4; border-radius: 12px; background: #f2f8f5; color: #325f50; }
+.workspace-task-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.sync-range-control { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; padding: 7px 10px; background: #f1f7f4; border: 1px solid #dfeae4; border-radius: 10px; color: #71817c; font-size: 12px; }
+.sync-range-control label { color: #37584e; font-weight: 500; }
+.sync-range-control .ant-input { width: 150px; background: white; }
+.sync-range-notice { margin: 0 0 18px; }
+
+.heading-actions .sync-range-control .ant-btn { height: 28px; }
+@media (max-width: 760px) { .heading-actions { flex-wrap: wrap; } .sync-range-control { flex-basis: 100%; justify-content: flex-start; } }

@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 
 CommunicationStatus = Literal['unknown', 'outgoing', 'incoming', 'mutual']
+RECOMMENDATION_READ_LIMIT = 20
 
 
 class CommunicationEvidence(BaseModel):
@@ -50,9 +51,11 @@ class ResumeCaptureResult(BaseModel):
     geek_id: str
     name: str
     captured_at: datetime
+    job_label: str = ''
 
 
 class RecommendedPerson(BaseModel):
+    first_retrieved_at: datetime | None = None
     id: str = ''
     source_job: str = ''
     geekId: str
@@ -72,13 +75,15 @@ class RecommendedPerson(BaseModel):
 class RecommendationSnapshot(BaseModel):
     version: Literal[1] = 1
     job_label: str = ''
-    limit: int = Field(default=10, ge=1, le=10)
-    candidates: list[RecommendedPerson] = Field(default_factory=list, max_length=10)
+    # Keep historical 50-person snapshots readable; new reads enforce the current cap in the service.
+    limit: int = Field(default=RECOMMENDATION_READ_LIMIT, ge=1, le=50)
+    candidates: list[RecommendedPerson] = Field(default_factory=list, max_length=50)
     captured_at: datetime | None = None
     stop_reason: str = ''
 
 
 class RecommendationLibrary(RecommendationSnapshot):
+    job_key: str = ''
     candidates: list[RecommendedPerson] = Field(default_factory=list)
 
 
@@ -90,7 +95,20 @@ class RecycledRecommendation(BaseModel):
     id: str
     name: str
     baseInfo: str
+    job_key: str = ''
+    scope_label: str = '历史全局排除'
 
 
 class RecommendationRecycleBin(BaseModel):
     candidates: list[RecycledRecommendation] = Field(default_factory=list)
+
+
+class RecommendationReadRequest(BaseModel):
+    job_key: str = Field(min_length=1, max_length=64)
+
+
+class RecommendationJobsSnapshot(BaseModel):
+    version: Literal[1]
+    current_job: str
+    jobs: list[str] = Field(min_length=1, max_length=2000)
+    captured_at: datetime

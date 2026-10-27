@@ -3,14 +3,16 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.json_utils import dumps, loads
+from app.db.errors import database_error_summary
 from app.db.models import (
     AuditEventRecord,
     CandidateNoteRecord,
@@ -22,6 +24,7 @@ from app.db.models import (
     SyncRunRecord,
     TagRecord,
     TimelineEventRecord,
+    CommunicationRecycleRecord,
 )
 from app.schemas.local import (
     CandidateDetail,
@@ -59,18 +62,20 @@ class LocalStoreService:
     def _audit(self, event_type: str, target_type: str, target_id: str, detail: dict[str, Any], actor: str = "system") -> None:
         self.db.add(AuditEventRecord(actor=_actor(actor), event_type=event_type, target_type=target_type, target_id=target_id, detail_json=dumps(detail)))
 
-    async def sync(self, scope: str = "all", diagnostic: bool = False) -> SyncResponse:
+    async def sync(self, scope: str = "all", diagnostic: bool = False, since: date | None = None) -> SyncResponse:
         if self.boss is None:
             raise RuntimeError("未配置 BOSS 只读服务")
         diagnostic_log = DiagnosticLog.create()
         self.diagnostic_log_path = str(diagnostic_log.path) if diagnostic_log else None
         if diagnostic_log is not None:
-            diagnostic_log.write("sync.start", {"scope": scope, "cwd": str(Path.cwd()), "debug": diagnostic})
+            diagnostic_log.write("sync.start", {"scope": scope, "since": since.isoformat() if since else None, "cwd": str(Path.cwd()), "debug": diagnostic})
         run = SyncRunRecord(scope=scope, status="running")
         self.db.add(run)
         self.db.commit()
         diagnostic_log.write("sync.created", {"sync_id": run.id})
         seen = written = 0
+        verification_ids: list[str] = []
+        ambiguous_legacy_ids: set[str] = set()
         try:
             phase_start = time.monotonic()
             diagnostic_log.write("sync.jobs_start")
@@ -85,7 +90,7 @@ class LocalStoreService:
                 phase_start = time.monotonic()
                 diagnostic_log.write("sync.candidates_start")
                 candidates_by_job = await self.boss.list_candidates_for_jobs(
-                    remote_jobs.jobs, debug=diagnostic, diagnostic_log=diagnostic_log
+                    remote_jobs.jobs, debug=diagnostic, diagnostic_log=diagnostic_log, history=True, since=since
                 )
                 diagnostic_log.write("sync.candidates_complete", {"elapsed_seconds": time.monotonic() - phase_start})
             phase_start = time.monotonic()
@@ -111,16 +116,32 @@ class LocalStoreService:
                     diagnostic_log.write("sync.candidates_loaded", {"job_id": remote.id, "count": len(candidates.candidates)})
                 for item in candidates.candidates:
                     seen += 1
-                    # boss-cli list output currently has no candidate ID. Keep
-                    # the fallback key stable when only message/time changes.
-                    remote_id = _fingerprint("candidate", item.name.strip().lower(), item.job.strip().lower())
+                    legacy_id = _fingerprint("candidate", item.name.strip().lower(), item.job.strip().lower())
+                    remote_id = _fingerprint("boss-chat", item.source_id) if item.source_id else legacy_id
+                    # Existing tombstones retain their original exclusion scope.
+                    if self.db.get(CommunicationRecycleRecord, remote_id) is not None or self.db.get(CommunicationRecycleRecord, legacy_id) is not None:
+                        continue
                     candidate = self.db.scalar(select(CandidateRecord).where(CandidateRecord.remote_id == remote_id))
+                    if item.source_id:
+                        legacy = self.db.scalar(select(CandidateRecord).where(CandidateRecord.remote_id == legacy_id))
+                        if legacy is not None and not loads(legacy.source_snapshot, {}).get('source_id'):
+                            if item.legacy_match_unique and candidate is None:
+                                # One-time identity upgrade keeps the local ID and all annotations.
+                                legacy.remote_id = remote_id
+                                candidate = legacy
+                            elif not item.legacy_match_unique:
+                                source = loads(legacy.source_snapshot, {})
+                                source['identity_warning'] = '旧记录仅有姓名和岗位，现有多个同名会话，未将旧标注分配给任意一人；请人工确认历史记录'
+                                legacy.source_snapshot = dumps(source)
+                                ambiguous_legacy_ids.add(legacy.id)
                     if candidate is None:
                         candidate = CandidateRecord(remote_id=remote_id, name=item.name, profile_json="{}")
                         self.db.add(candidate)
                         self.db.flush()
                         written += 1
                     candidate.name = item.name
+                    if candidate.id not in verification_ids:
+                        verification_ids.append(candidate.id)
                     candidate.source_snapshot = dumps(item.model_dump())
                     relation = self.db.scalar(select(JobCandidateRecord).where(JobCandidateRecord.job_id == job.id, JobCandidateRecord.candidate_id == candidate.id))
                     if relation is None:
@@ -134,6 +155,10 @@ class LocalStoreService:
                     event_key = _fingerprint("remote-message", job.id, candidate.id, item.time, item.message)
                     if self.db.scalar(select(TimelineEventRecord).where(TimelineEventRecord.dedupe_key == event_key)) is None:
                         self.db.add(TimelineEventRecord(candidate_id=candidate.id, job_id=job.id, event_type="message", title="BOSS 沟通记录", content=item.message, actor="boss-cli", dedupe_key=event_key))
+                    # Production sessions disable autoflush. Later rows must see
+                    # identity upgrades, relations and event keys from this row.
+                    # Flush stays inside this transaction; it does not commit.
+                    self.db.flush()
             run.status = "success"
             run.records_seen = seen
             run.records_written = written
@@ -143,19 +168,19 @@ class LocalStoreService:
             diagnostic_log.write("sync.database_complete", {"elapsed_seconds": time.monotonic() - phase_start})
             if diagnostic_log is not None:
                 diagnostic_log.write("sync.complete", {"sync_id": run.id, "records_seen": seen, "records_written": written})
-            return SyncResponse(sync_id=run.id, scope=scope, status=run.status, records_seen=seen, records_written=written, diagnostic_log=self.diagnostic_log_path)
+            return SyncResponse(sync_id=run.id, scope=scope, status=run.status, records_seen=seen, records_written=written, diagnostic_log=self.diagnostic_log_path, since=since, verification_ids=verification_ids, history_summary={**getattr(self.boss, "history_summary", {}), 'ambiguous_legacy': len(ambiguous_legacy_ids)})
         except Exception as exc:
             self.db.rollback()
-            error_text = str(exc).strip() or repr(exc)
-            error_summary = f"{type(exc).__name__}: {error_text}"[:2000]
+            error_summary = database_error_summary(exc) if isinstance(exc, SQLAlchemyError) else f"{type(exc).__name__}: {str(exc).strip() or repr(exc)}"[:2000]
             if diagnostic_log is not None:
                 diagnostic_log.write("sync.failed", {"records_seen": seen, "records_written": written, "error": error_summary})
-            LOGGER.exception(
+            LOGGER.error(
                 "BOSS sync failed: scope=%s records_seen=%s records_written=%s error=%s",
                 scope,
                 seen,
                 written,
                 error_summary,
+                exc_info=not isinstance(exc, SQLAlchemyError),
             )
             failed = self.db.get(SyncRunRecord, run.id)
             if failed is not None:
@@ -173,7 +198,7 @@ class LocalStoreService:
         return LocalJobListResponse(jobs=[LocalJob(id=r.id, remote_id=r.remote_id, title=r.title, status=r.status, label=r.label, meta=loads(r.meta_json, []), stats=loads(r.stats_json, {}), updated_at=r.updated_at) for r in rows], total=len(rows))
 
     def list_candidates(self, job_id: str | None = None, stage: str | None = None, tag: str | None = None, q: str | None = None, favorite: bool | None = None, limit: int = 100, offset: int = 0) -> LocalCandidateListResponse:
-        stmt = select(CandidateRecord).order_by(CandidateRecord.updated_at.desc()).offset(offset).limit(min(limit, 500))
+        stmt = select(CandidateRecord).order_by(CandidateRecord.created_at.desc(), CandidateRecord.id).offset(offset).limit(min(limit, 500))
         if job_id:
             stmt = stmt.join(JobCandidateRecord, JobCandidateRecord.candidate_id == CandidateRecord.id).where(JobCandidateRecord.job_id == job_id)
         if stage:
@@ -185,9 +210,10 @@ class LocalStoreService:
         if q:
             needle = f"%{q.strip()}%"
             stmt = stmt.where(or_(CandidateRecord.name.ilike(needle), CandidateRecord.owner.ilike(needle)))
+        total = self.db.scalar(select(func.count()).select_from(stmt.limit(None).offset(None).order_by(None).subquery()))
         rows = self.db.scalars(stmt).unique().all()
         items = [self._candidate_view(row) for row in rows]
-        return LocalCandidateListResponse(candidates=items, total=len(items))
+        return LocalCandidateListResponse(candidates=items, total=total)
 
     def list_reminders(self, limit: int = 100) -> LocalCandidateListResponse:
         rows = self.db.scalars(select(CandidateRecord).order_by(CandidateRecord.follow_up_at.asc(), CandidateRecord.updated_at.desc()).limit(min(limit, 500))).all()
@@ -208,16 +234,18 @@ class LocalStoreService:
         tags = self.db.scalars(select(TagRecord.name).join(CandidateTagRecord, CandidateTagRecord.tag_id == TagRecord.id).where(CandidateTagRecord.candidate_id == row.id)).all()
         latest = relations[0] if relations else None
         communication = loads(row.profile_json, {}).get('communication', {})
+        identity_warning = loads(row.source_snapshot, {}).get('identity_warning', '')
         stale = bool(communication.get('evidence')) and (
             communication.get('message', '') != (latest.last_message if latest else '') or
             communication.get('time', '') != (latest.remote_time if latest else ''))
         # No stable remote message IDs yet: conservatively recheck changed
         # message/time snapshots, even when the displayed time is relative.
         return LocalCandidate(id=row.id, remote_id=row.remote_id, name=row.name, stage=row.stage, owner=row.owner, favorite=row.favorite, follow_up_at=row.follow_up_at, job_ids=[job.id for job in jobs if job], job_titles=[job.title for job in jobs if job], latest_message=latest.last_message if latest else "", latest_time=latest.remote_time if latest else "", unread_count=latest.unread_count if latest else 0, tags=list(tags), updated_at=row.updated_at,
-            communication_status='unknown' if stale else communication.get('status', 'unknown'),
+            created_at=row.created_at,
+            communication_status='unknown' if stale or identity_warning else communication.get('status', 'unknown'),
             communication_checked_at=communication.get('checked_at'),
             communication_evidence=communication.get('evidence'),
-            communication_error='消息或时间已变化，请重新核验' if stale else communication.get('error', ''),
+            communication_error=identity_warning or ('消息或时间已变化，请重新核验' if stale else communication.get('error', '')),
             communication_stale=stale)
 
     def detail(self, candidate_id: str) -> CandidateDetail:

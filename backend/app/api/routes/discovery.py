@@ -1,4 +1,4 @@
-import asyncio
+from app.services.operation_lock import manual_read_lock
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -10,9 +10,9 @@ from app.services.boss_readonly import get_boss_cli_adapter
 from app.services.discovery import DiscoveryService
 from app.api.routes.local_data import map_sync_error
 from app.parsers.boss_cli_output import BossCliOutputError
+from app.schemas.discovery import RecommendationReadRequest
 
 router = APIRouter(prefix='/api/local', tags=['manual-discovery'])
-manual_read_lock = asyncio.Lock()
 
 
 def service(db: Session = Depends(get_db)) -> DiscoveryService:
@@ -20,14 +20,33 @@ def service(db: Session = Depends(get_db)) -> DiscoveryService:
 
 
 @router.get('/recommendations', response_model=RecommendationLibrary)
-def recommendations(svc: DiscoveryService = Depends(service)) -> RecommendationLibrary:
+def recommendations(job_key: str | None = None, svc: DiscoveryService = Depends(service)) -> RecommendationLibrary:
     # Cache only. Loading this page must NEVER open BOSS.
-    return svc.recommendations()
+    try:
+        return svc.recommendations(job_key)
+    except LookupError as error:
+        raise HTTPException(404, str(error)) from error
+
+
+@router.get('/recommendations/jobs')
+def recommendation_jobs(svc: DiscoveryService = Depends(service)):
+    return svc.jobs()
+
+
+@router.post('/recommendations/jobs/read')
+async def read_recommendation_jobs(svc: DiscoveryService = Depends(service)):
+    if manual_read_lock.locked():
+        raise HTTPException(409, '已有读取任务，请等待完成')
+    async with manual_read_lock:
+        try:
+            return await svc.read_jobs()
+        except Exception as error:
+            raise map_sync_error(error) from error
 
 
 @router.get('/recommendations/recycle-bin', response_model=RecommendationRecycleBin)
-def recycle_bin(svc: DiscoveryService = Depends(service)) -> RecommendationRecycleBin:
-    return svc.recycle_bin()
+def recycle_bin(job_key: str | None = None, svc: DiscoveryService = Depends(service)) -> RecommendationRecycleBin:
+    return svc.recycle_bin(job_key)
 
 
 @router.post('/recommendations/recycle-bin/{identity_key}/restore', status_code=204)
@@ -42,12 +61,16 @@ async def allow_recommendation_again(identity_key: str, svc: DiscoveryService = 
 
 
 @router.post('/recommendations/read', response_model=RecommendationReadResult)
-async def read_recommendations(svc: DiscoveryService = Depends(service)) -> RecommendationReadResult:
+async def read_recommendations(payload: RecommendationReadRequest, svc: DiscoveryService = Depends(service)) -> RecommendationReadResult:
     if manual_read_lock.locked():
         raise HTTPException(status_code=409, detail='已有手动读取任务，请等待完成后再点击')
     async with manual_read_lock:
         try:
-            return await svc.read_recommendations()
+            return await svc.read_recommendations(payload.job_key)
+        except LookupError as error:
+            raise HTTPException(404, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
         except Exception as error:
             raise map_sync_error(error) from error
 

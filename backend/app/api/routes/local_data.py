@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.adapters.boss_cli import BossCliCommandNotFoundError, BossCliExecutionError, BossCliTimeoutError
@@ -9,6 +11,7 @@ from app.parsers.boss_cli_output import BossCliOutputError
 from app.schemas.local import CandidateDetail, CandidateUpdate, FunnelResponse, LocalCandidateListResponse, LocalJobListResponse, NoteCreate, SyncResponse, TagUpdate, TemplateCreate, TimelineEvent
 from app.services.boss_readonly import BossReadOnlyService, get_boss_cli_adapter
 from app.services.local_store import LocalStoreService
+from app.services.operation_lock import manual_read_lock
 
 router = APIRouter(prefix="/api/local", tags=["local-data"])
 
@@ -18,6 +21,10 @@ def service(db: Session = Depends(get_db)) -> LocalStoreService:
 
 
 def map_sync_error(error: Exception) -> HTTPException:
+    if isinstance(error, IntegrityError):
+        return HTTPException(status_code=500, detail="本地数据库保存失败：数据关联发生冲突，请查看诊断日志")
+    if isinstance(error, SQLAlchemyError):
+        return HTTPException(status_code=500, detail="本地数据库读写失败，请查看诊断日志")
     if isinstance(error, BossCliTimeoutError):
         return HTTPException(status_code=504, detail=str(error))
     if isinstance(error, (BossCliCommandNotFoundError, BossCliExecutionError, BossCliOutputError)):
@@ -30,10 +37,18 @@ def map_sync_error(error: Exception) -> HTTPException:
 async def sync(
     scope: str = Query(default="all", pattern="^(all|jobs)$"),
     diagnostic: bool = Query(default=False),
+    since: date | None = Query(default=None, description="北京时间起始日期（含当天）至今；留空为全部历史"),
     svc: LocalStoreService = Depends(service),
 ) -> SyncResponse:
     try:
-        return await svc.sync(scope, diagnostic=diagnostic)
+        if since and since > datetime.now(timezone(timedelta(hours=8))).date():
+            raise HTTPException(422, "起始日期不能晚于今天")
+        if manual_read_lock.locked():
+            raise HTTPException(409, '已有读取或删除任务，请等待完成')
+        async with manual_read_lock:
+            return await svc.sync(scope, diagnostic=diagnostic, since=since)
+    except HTTPException:
+        raise
     except Exception as error:
         mapped = map_sync_error(error)
         if svc.diagnostic_log_path:

@@ -29,6 +29,8 @@ class Candidate(BaseModel):
     time: str
     message: str
     unread_count: int = Field(ge=0)
+    source_id: str = ""
+    legacy_match_unique: bool = True
 
 
 class CandidateListResponse(BaseModel):

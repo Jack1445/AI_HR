@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db.models import SyncRunRecord
+from app.db.errors import redact_legacy_sql_error
 from app.db.session import get_db
 from app.services.boss_readonly import get_boss_cli_adapter
 
@@ -82,6 +83,8 @@ def _summarize_log(path: Path | None) -> dict[str, Any]:
         details = record.get("details")
         if isinstance(details, dict):
             safe_details = {key: value for key, value in details.items() if key in safe_detail_keys}
+            if isinstance(safe_details.get('error'), str):
+                safe_details['error'] = redact_legacy_sql_error(safe_details['error'])
             invocation = details.get("invocation")
             if isinstance(invocation, list):
                 safe_details["invocation"] = invocation
@@ -168,7 +171,7 @@ def status(db: Session = Depends(get_db)) -> dict[str, Any]:
             "finished_at": latest_sync.finished_at,
             "records_seen": latest_sync.records_seen,
             "records_written": latest_sync.records_written,
-            "error_summary": latest_sync.error_summary,
+            "error_summary": redact_legacy_sql_error(latest_sync.error_summary),
         }
     return {
         "server_time": datetime.now(timezone.utc),

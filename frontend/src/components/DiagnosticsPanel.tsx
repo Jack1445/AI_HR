@@ -12,6 +12,7 @@ export const timingLabels: Record<string, string> = {
   "positions.navigate": "进入职位管理", "positions.settle_delay": "岗位页面固定等待",
   "positions.rows_ready": "等待并提取岗位列表", "positions.after_rows_delay": "岗位读取后固定等待",
   "candidates.navigate": "进入沟通页", "candidates.filter_ready": "等待筛选栏",
+  "candidates.history": "加载全部沟通历史", "candidates.history_scroll": "滚动加载历史会话",
   "candidates.filter_click": "切换候选人筛选", "candidates.filter_delay": "筛选后固定等待",
   "candidates.filter_selected": "确认筛选选中", "candidates.list_settled": "等待候选人列表稳定", "candidates.extract": "提取候选人文字",
   "backend.queue_wait": "后端排队", "backend.spawn": "启动 CLI 进程", "backend.first_output": "启动至首次数据输出",

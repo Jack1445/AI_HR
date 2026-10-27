@@ -46,14 +46,14 @@ def test_recommendations_are_manual_bounded_and_separate():
     service = DiscoveryService(db, adapter)
     assert service.recommendations().captured_at is None
     assert adapter.calls == []
-    assert len(asyncio.run(service.read_recommendations()).candidates) == 10
-    assert adapter.calls[0][:5] == ('recommend', '--limit', '10', '--json', '--exclude-file')
+    assert len(asyncio.run(service.read_recommendations(service.remember_job('测试岗位', available=True).id)).candidates) == 10
+    assert adapter.calls[0][:5] == ('recommend', '--limit', '20', '--json', '--exclude-file')
     assert db.scalars(select(CandidateRecord)).all() == []
     assert len(service.recommendations().candidates) == 10
     assert len(adapter.calls) == 1  # opening cache doesn't scrape again
     adapter.body = recommendation(2)
-    asyncio.run(service.read_recommendations())
-    assert len(db.scalars(select(RecommendationSnapshotRecord)).all()) == 2
+    asyncio.run(service.read_recommendations(service.remember_job('测试岗位', available=True).id))
+    assert len(db.scalars(select(RecommendationSnapshotRecord)).all()) == 3
     assert len(service.recommendations().candidates) == 10
 
 
@@ -61,10 +61,10 @@ def test_oversized_or_invalid_output_preserves_previous_cache():
     db = database()
     adapter = Adapter(recommendation(2))
     service = DiscoveryService(db, adapter)
-    asyncio.run(service.read_recommendations())
+    asyncio.run(service.read_recommendations(service.remember_job('测试岗位', available=True).id))
     adapter.body = recommendation(11)
     with pytest.raises(BossCliOutputError):
-        asyncio.run(service.read_recommendations())
+        asyncio.run(service.read_recommendations(service.remember_job('测试岗位', available=True).id))
     assert len(service.recommendations().candidates) == 2
 
 
@@ -82,7 +82,7 @@ def test_classification_bounds_and_duplicate_ids_before_cli():
 def test_verified_state_persists_and_new_message_requires_recheck():
     db = database()
     job = JobRecord(remote_id='j1', title='测试岗位')
-    candidate = CandidateRecord(remote_id='c1', name='测试姓名', stage='interviewing', profile_json=dumps({'keep': 'local-profile'}), source_snapshot=dumps({'job': job.title}))
+    candidate = CandidateRecord(remote_id='c1', name='测试姓名', stage='interviewing', profile_json=dumps({'keep': 'local-profile'}), source_snapshot=dumps({'job': job.title, 'source_id': 'chat-1'}))
     db.add_all([job, candidate]); db.flush()
     relation = JobCandidateRecord(job_id=job.id, candidate_id=candidate.id, last_message='你好', remote_time='刚刚')
     db.add(relation); db.commit()
@@ -103,7 +103,7 @@ def test_verified_state_persists_and_new_message_requires_recheck():
 
 def test_wrong_candidate_result_cannot_overwrite_profile():
     db = database()
-    candidate = CandidateRecord(remote_id='c1', name='测试', source_snapshot=dumps({'job': '测试岗位'}))
+    candidate = CandidateRecord(remote_id='c1', name='测试', source_snapshot=dumps({'job': '测试岗位', 'source_id': 'chat-2'}))
     db.add(candidate); db.commit()
     adapter = Adapter(dict(version=1, results=[dict(id='different-person', status='unknown', checked_at='2026-10-21T08:00:00Z')]))
     with pytest.raises(BossCliOutputError):
@@ -125,7 +125,7 @@ def screenshot_service(tmp_path, monkeypatch):
     db = database()
     db.add(RecommendationSnapshotRecord(id='latest', snapshot_json=json.dumps(recommendation(1))))
     db.commit()
-    adapter = ScreenshotAdapter(dict(version=1, geek_id='g1', name='测试候选人', captured_at='2026-10-21T09:00:00Z'))
+    adapter = ScreenshotAdapter(dict(version=1, job_label='测试岗位', geek_id='g1', name='测试候选人', captured_at='2026-10-21T09:00:00Z'))
     return DiscoveryService(db, adapter), adapter
 
 
@@ -138,14 +138,14 @@ def test_screenshot_is_bound_to_id_cached_and_retained_on_list_refresh(tmp_path,
     assert service.recommendations().candidates[0].online_resume.id == saved.id
     assert len(adapter.calls) == 1  # GET image and GET cache never run CLI
     service.adapter = Adapter(recommendation(1))
-    refreshed = asyncio.run(service.read_recommendations())
+    refreshed = asyncio.run(service.read_recommendations(service.remember_job('测试岗位', available=True).id))
     assert refreshed.candidates[0].online_resume.id == saved.id
     # A similarly named person with another stable ID cannot inherit a screenshot.
     other = recommendation(1)
     other['candidates'][0]['geekId'] = 'g2'
     other['candidates'][0]['baseInfo'] = '硕士 / 25岁'
     service.adapter = Adapter(other)
-    assert next(p for p in asyncio.run(service.read_recommendations()).candidates if p.geekId == 'g2').online_resume is None
+    assert next(p for p in asyncio.run(service.read_recommendations(service.remember_job('测试岗位', available=True).id)).candidates if p.geekId == 'g2').online_resume is None
 
 
 def test_wrong_person_screenshot_is_removed_and_previous_image_kept(tmp_path, monkeypatch):
@@ -184,25 +184,25 @@ def test_library_accumulates_and_matches_both_name_and_basic_info():
     db = database()
     adapter = Adapter(recommendation(10))
     svc = DiscoveryService(db, adapter)
-    first = asyncio.run(svc.read_recommendations())
+    first = asyncio.run(svc.read_recommendations(svc.remember_job('测试岗位', available=True).id))
     assert len(first.added_ids) == 10
     second_body = recommendation(10)
     for i, p in enumerate(second_body['candidates']):
         p['baseInfo'] = f'硕士 / {i+20}岁'
         p['geekId'] = f'new-{i}'
     adapter.body = second_body
-    second = asyncio.run(svc.read_recommendations())
+    second = asyncio.run(svc.read_recommendations(svc.remember_job('测试岗位', available=True).id))
     assert len(second.candidates) == 20  # same name, different basic info: retain both
     assert len(second.added_ids) == 10
     for p in second_body['candidates']:
         p['geekId'] += '-changed'
         p['name'] = '  ' + p['name'] + '  '
-    duplicate = asyncio.run(svc.read_recommendations())
+    duplicate = asyncio.run(svc.read_recommendations(svc.remember_job('测试岗位', available=True).id))
     assert len(duplicate.candidates) == 20 and duplicate.added_ids == []
     # Same basic info, different name must also remain distinct.
     adapter.body = recommendation(1)
     adapter.body['candidates'][0]['name'] = '另一个姓名'
-    assert len(asyncio.run(svc.read_recommendations()).candidates) == 21
+    assert len(asyncio.run(svc.read_recommendations(svc.remember_job('测试岗位', available=True).id)).candidates) == 21
     assert len(DiscoveryService(db, adapter).recommendations().candidates) == 21
 
 
@@ -219,12 +219,13 @@ def test_delete_is_local_keeps_other_people_and_prevents_reimport(tmp_path, monk
     assert service.db.scalars(select(RecommendedCandidateRecord)).all() == []
     bin_entry = service.recycle_bin().candidates[0]
     assert bin_entry.name == person.name and bin_entry.baseInfo == person.baseInfo
-    assert set(bin_entry.model_dump()) == {'id', 'name', 'baseInfo'}
+    assert set(bin_entry.model_dump()) == {'id', 'name', 'baseInfo', 'job_key', 'scope_label'}
+    assert bin_entry.scope_label == '当前岗位'
     assert len(adapter.calls) == calls
     with pytest.raises(LookupError):
         asyncio.run(service.capture_resume('g1', person.id))
     service.adapter = Adapter(recommendation(1))
-    assert asyncio.run(service.read_recommendations()).added_ids == []
+    assert asyncio.run(service.read_recommendations(service.remember_job('测试岗位', available=True).id)).added_ids == []
     assert DiscoveryService(service.db, adapter).recommendations().candidates == []
     with pytest.raises(LookupError):
         service.delete_recommendation('missing')
@@ -240,7 +241,7 @@ def test_exclusion_file_contains_both_identity_fields():
     db.add(RecommendationSnapshotRecord(id='latest', snapshot_json=json.dumps(recommendation(1))))
     db.commit()
     svc = DiscoveryService(db, ExclusionAdapter(recommendation(0)))
-    assert len(asyncio.run(svc.read_recommendations()).candidates) == 1
+    assert len(asyncio.run(svc.read_recommendations(svc.remember_job('测试岗位', available=True).id)).candidates) == 1
 
 
 def test_recycle_bin_excludes_pair_but_allows_same_name_with_different_info(tmp_path, monkeypatch):
@@ -257,7 +258,7 @@ def test_recycle_bin_excludes_pair_but_allows_same_name_with_different_info(tmp_
     # First is the recycled identity, even if BOSS changes its remote ID.
     incoming['candidates'][0]['geekId'] = 'changed-id'
     svc.adapter = CheckRecycleAdapter(incoming)
-    result = asyncio.run(svc.read_recommendations())
+    result = asyncio.run(svc.read_recommendations(svc.remember_job('测试岗位', available=True).id))
     assert len(result.added_ids) == 1
     assert result.candidates[0].name == person.name
     assert result.candidates[0].baseInfo != person.baseInfo
@@ -293,7 +294,7 @@ def test_deletion_preserves_other_candidates_screenshots(tmp_path, monkeypatch):
     other = recommendation(1)
     other['candidates'][0].update(geekId='g2', baseInfo='硕士 / 30岁')
     svc.adapter = Adapter(other)
-    new_person = next(p for p in asyncio.run(svc.read_recommendations()).candidates if p.geekId == 'g2')
+    new_person = next(p for p in asyncio.run(svc.read_recommendations(svc.remember_job('测试岗位', available=True).id)).candidates if p.geekId == 'g2')
     adapter.body['geek_id'] = 'g2'
     svc.adapter = adapter
     other_image = asyncio.run(svc.capture_resume('g2', new_person.id))
@@ -307,7 +308,7 @@ def test_allow_again_only_releases_selected_pair_and_waits_for_manual_read():
     db = database()
     adapter = Adapter(recommendation(2))
     svc = DiscoveryService(db, adapter)
-    people = asyncio.run(svc.read_recommendations()).candidates
+    people = asyncio.run(svc.read_recommendations(svc.remember_job('测试岗位', available=True).id)).candidates
     for person in people:
         svc.delete_recommendation(person.id)
     recycled = svc.recycle_bin().candidates
@@ -326,7 +327,7 @@ def test_allow_again_only_releases_selected_pair_and_waits_for_manual_read():
             assert excluded == [{'name': other.name, 'baseInfo': other.baseInfo}]
             return await super().run(*args)
     restarted.adapter = CheckRemainingExclusions(recommendation(2))
-    result = asyncio.run(restarted.read_recommendations())
+    result = asyncio.run(restarted.read_recommendations(restarted.remember_job('测试岗位', available=True).id))
     assert len(result.added_ids) == 1
     assert result.candidates[0].baseInfo == target.baseInfo
     assert result.candidates[0].online_resume is None
@@ -336,7 +337,7 @@ def test_allow_again_only_releases_selected_pair_and_waits_for_manual_read():
 def test_allow_again_unknown_entry_leaves_recycle_bin_unchanged():
     adapter = Adapter(recommendation(1))
     svc = DiscoveryService(database(), adapter)
-    person = asyncio.run(svc.read_recommendations()).candidates[0]
+    person = asyncio.run(svc.read_recommendations(svc.remember_job('测试岗位', available=True).id)).candidates[0]
     svc.delete_recommendation(person.id)
     before = svc.recycle_bin().model_dump()
     calls_before = len(adapter.calls)

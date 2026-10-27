@@ -31,6 +31,8 @@ class ParsedCandidate:
     time: str
     message: str
     unread_count: int
+    source_id: str = ""
+    legacy_match_unique: bool = True
 
 
 @dataclass(frozen=True)

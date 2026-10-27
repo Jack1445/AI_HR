@@ -22,6 +22,13 @@ class BossCliTimeoutError(BossCliExecutionError):
     """The configured command exceeded its timeout."""
 
 
+def cli_error_detail(stderr: str, stdout: str) -> str:
+    """Timing events belong in diagnostics, never in the user's error banner."""
+    lines = [line for line in stderr.splitlines() if not line.startswith('[boss-cli][timing] ') and not line.startswith('[boss-cli][debug] ')]
+    detail = '\n'.join(lines).strip() or stdout.strip() or 'CLI 未提供错误说明，请查看诊断日志'
+    return detail if len(detail) <= 1200 else detail[:1200] + '…（详细信息见诊断日志）'
+
+
 @dataclass(frozen=True)
 class BossCliResult:
     args: tuple[str, ...]
@@ -81,8 +88,10 @@ class BossCliAdapter:
         *args: str,
         debug: bool = False,
         diagnostic_log: DiagnosticLog | None = None,
+        timeout_seconds: float | None = None,
     ) -> BossCliResult:
         invocation = self.invocation
+        command_timeout = self.timeout_seconds if timeout_seconds is None else timeout_seconds
         # Direct read endpoints also need traces so a queued sync can identify
         # which earlier request holds the shared browser. Never log write args.
         if diagnostic_log is None and args in {("positions",), ("list",)}:
@@ -191,7 +200,7 @@ class BossCliAdapter:
                     await asyncio.gather(collection, return_exceptions=True)
 
             try:
-                await asyncio.wait_for(asyncio.shield(collection), timeout=self.timeout_seconds)
+                await asyncio.wait_for(asyncio.shield(collection), timeout=command_timeout)
             except asyncio.TimeoutError as exc:
                 trace("cli.timeout_detected", {"elapsed_seconds": time.monotonic() - started_at})
                 await stop_process()
@@ -199,14 +208,14 @@ class BossCliAdapter:
                     trace(
                         "cli.timeout",
                         {
-                            "timeout_seconds": self.timeout_seconds,
+                            "timeout_seconds": command_timeout,
                             "elapsed_seconds": time.monotonic() - started_at,
                             "stdout": stdout_buffer.decode("utf-8", errors="replace") if debug else "",
                             "stderr": stderr_buffer.decode("utf-8", errors="replace") if debug else "",
                         },
                     )
                 raise BossCliTimeoutError(
-                    f"boss-cli command timed out after {self.timeout_seconds:.1f}s: {' '.join((*invocation, *args))}"
+                    f"boss-cli command timed out after {command_timeout:.1f}s: {' '.join((*invocation, *args))}"
                 ) from exc
             except asyncio.CancelledError:
                 trace("cli.cancelled")
@@ -232,8 +241,9 @@ class BossCliAdapter:
                     },
                 )
         if result.returncode != 0:
-            detail = result.stderr.strip() or result.stdout.strip() or "no output"
+            detail = cli_error_detail(result.stderr, result.stdout)
+            trace('cli.execution_failed', {'returncode': result.returncode, 'error': detail})
             raise BossCliExecutionError(
-                f"boss-cli command failed with exit code {result.returncode}: {detail}"
+                f"BOSS 读取失败（退出码 {result.returncode}）：{detail}"
             )
         return result

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -13,6 +13,9 @@ class SyncResponse(BaseModel):
     records_written: int = 0
     error_summary: str = ""
     diagnostic_log: str | None = None
+    since: date | None = None
+    verification_ids: list[str] = Field(default_factory=list)
+    history_summary: dict[str, Any] = Field(default_factory=dict)
 
 
 class LocalJob(BaseModel):
@@ -32,6 +35,7 @@ class LocalJobListResponse(BaseModel):
 
 
 class LocalCandidate(BaseModel):
+    created_at: datetime
     id: str
     remote_id: str
     name: str

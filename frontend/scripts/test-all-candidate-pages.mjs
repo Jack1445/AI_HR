@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import ts from 'typescript';
+const source = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+const { outputText } = ts.transpileModule(source, {compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}});
+const code=outputText.replace('import.meta.env.VITE_API_BASE_URL', "''");
+const { fetchAllLocalCandidates }=await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+const people=Array.from({length:501},(_,i)=>({id:String(i)}));const calls=[];
+globalThis.fetch=async path=>{const url=new URL(path,'http://test');calls.push(url.searchParams);const offset=Number(url.searchParams.get('offset'));return {ok:true,status:200,json:async()=>({candidates:people.slice(offset,offset+500),total:501})};};
+const result=await fetchAllLocalCandidates();assert.equal(result.candidates.length,501);assert.deepEqual(calls.map(q=>q.get('offset')),['0','500']);assert.equal(calls.some(q=>q.has('job_id')),false);
+globalThis.fetch=async()=>({ok:true,status:200,json:async()=>({candidates:[],total:1})});
+await assert.rejects(fetchAllLocalCandidates(),/未读取完整/);
+console.log('All-candidate paging passed: 501 people across pages, no job filter and incomplete result rejection.');
