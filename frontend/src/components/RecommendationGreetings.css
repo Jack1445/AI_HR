@@ -1,0 +1,11 @@
+.greeting-progress { margin: 18px 24px; padding: 16px 20px; border: 1px solid #d6e6e0; border-radius: 12px; background: #f4faf7; color: #37564b; }
+.greeting-progress-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.greeting-feedback { margin: 14px 24px; }
+.greeting-confirm-job { line-height: 1.8; }
+.greeting-confirm-list { margin-top: 18px; }
+.greeting-history { width: 100%; margin: 12px 0; }
+.greeting-status { font-size: 13px; }
+.greeting-status.is-yes { color: #24834d; font-weight: 600; }
+.greeting-status.is-no { color: #8b9694; }
+.table-selection-bar > .ant-space { flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 600px) { .greeting-progress { margin: 12px; padding: 14px; } .greeting-progress-heading { align-items: flex-start; } .table-selection-bar { gap: 10px; flex-wrap: wrap; } }

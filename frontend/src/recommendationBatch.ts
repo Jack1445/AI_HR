@@ -32,4 +32,4 @@ export async function captureRecommendationBatch(
   return failures;
 }
 
-export interface RecommendationActivity { running: boolean; job: string; progress: ResumeBatchProgress | null; error: string | null; }
+export interface RecommendationActivity { kind?: 'read' | 'greet'; running: boolean; job: string; progress: ResumeBatchProgress | null; error: string | null; }

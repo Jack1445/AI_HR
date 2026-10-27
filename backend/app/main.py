@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -12,6 +13,8 @@ from app.api.routes.admin import router as admin_router
 from app.api.routes.debug import router as debug_router
 from app.api.routes.discovery import router as discovery_router
 from app.api.routes.tables import router as tables_router
+from app.api.routes.ai import router as ai_router
+from app.api.routes.recommendation_greetings import router as greetings_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.base import Base
@@ -21,10 +24,22 @@ settings = get_settings()
 configure_logging(settings.log_level)
 Base.metadata.create_all(bind=engine)
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from app.db.session import SessionLocal
+    from app.services.ai_management import recover_interrupted_runs
+    from app.services.recommendation_greetings import recover_interrupted_greetings
+    with SessionLocal() as db:
+        recover_interrupted_runs(db)
+        recover_interrupted_greetings(db)
+    yield
+
+
 app = FastAPI(
     title="AI Recruiter API",
-    version="0.3.6",
+    version="0.4.4",
     description="只读优先的招聘管理后端。",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -46,3 +61,5 @@ app.include_router(admin_router)
 app.include_router(debug_router)
 app.include_router(discovery_router)
 app.include_router(tables_router)
+app.include_router(ai_router)
+app.include_router(greetings_router)

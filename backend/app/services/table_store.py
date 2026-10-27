@@ -9,7 +9,7 @@ from app.db.models import TableWorkspaceRecord, TableCellRecord, RecommendedCand
 from app.schemas.tables import TableConfig, SaveConfig, SaveCells
 
 SYSTEM_FIELDS = {
-    'recommendations': {'name', 'base', 'expect', 'salary', 'fit', 'tags', 'resume', 'retrieved', 'source_job', 'notes'},
+    'recommendations': {'name', 'base', 'expect', 'salary', 'fit', 'tags', 'resume', 'retrieved', 'source_job', 'notes', 'greeted'},
     'communications': {'name', 'communication', 'stage', 'message', 'time', 'unread', 'tags', 'synced', 'owner', 'notes'},
 }
 

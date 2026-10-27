@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Avatar, Button, Checkbox, Empty, Image, Input, Modal, Progress, Select, Space, Table, Tag, Tooltip } from 'antd';
-import { DeleteOutlined, DownloadOutlined, EyeOutlined, FileImageOutlined, ReloadOutlined, SearchOutlined, TeamOutlined, UndoOutlined } from '@ant-design/icons';
+import { DeleteOutlined, DownloadOutlined, EyeOutlined, FileImageOutlined, ReloadOutlined, SearchOutlined, TeamOutlined, UndoOutlined, MessageOutlined } from '@ant-design/icons';
+import { useRecommendationGreetings } from './RecommendationGreetings';
 import { fetchRecommendationJobs, readRecommendationJobs, type RecommendationJob, allowRecommendationAgain, captureRecommendedResume, fetchRecommendationRecycleBin, fetchRecommendations, readRecommendations, resumeScreenshotUrl, type OnlineResumeScreenshot, type RecommendedPerson, type RecommendationSnapshot, type RecycledRecommendation } from '../api';
 import { ManagedTable, type ManagedField } from './ManagedTable';
 import { ResumeThumbnail } from './ResumeThumbnail';
@@ -34,9 +35,17 @@ export function Recommendations({ busy, setBusy, onActivity }: { busy: boolean; 
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ name: string; screenshot: OnlineResumeScreenshot } | null>(null);
   const locked = useRef(false);
+  const greeting = useRecommendationGreetings(jobKey, selectedJob?.label ?? '', setBusy);
   useEffect(() => {
-    onActivity(readAttempted ? { running: reading, job: selectedJob?.label ?? '', progress: batchProgress, error } : null);
-  }, [readAttempted, reading, selectedJob?.label, batchProgress, error, onActivity]);
+    setSnapshot(current => {
+      if (!current?.candidates.some(p => !p.greeted && greeting.greetedIds.has(p.id))) return current;
+      // Keep confirmed successes in the local view even after later batches finish.
+      return { ...current, candidates: current.candidates.map(p => greeting.greetedIds.has(p.id) ? { ...p, greeted: true } : p) };
+    });
+  }, [greeting.greetedIds, snapshot]);
+  useEffect(() => {
+    onActivity(greeting.activity?.running ? greeting.activity : readAttempted ? { running: reading, job: selectedJob?.label ?? '', progress: batchProgress, error } : greeting.activity);
+  }, [greeting.activity, readAttempted, reading, selectedJob?.label, batchProgress, error, onActivity]);
   useEffect(() => {
     const controller = new AbortController();
     fetchRecommendationJobs(controller.signal).then(result => { setJobs(result.jobs); setJobKey(result.jobs.find(j => j.count > 0)?.id ?? result.jobs[0]?.id ?? ''); }).catch(reason => { if (!controller.signal.aborted) setError(String(reason.message ?? reason)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
@@ -114,6 +123,7 @@ export function Recommendations({ busy, setBusy, onActivity }: { busy: boolean; 
     { title: '期望职位', dataIndex: 'expect', key: 'expect', width: 180, render: (value: string) => <div className="recommendation-cell">{value || '—'}</div> },
     { title: '期望薪资', dataIndex: 'salary', key: 'salary', width: 100, render: (value: string) => <span className="recommendation-salary">{value || '—'}</span> },
     { title: '契合程度', key: 'fit', width: 110, render: () => null },
+    { title: '已打招呼', key: 'greeted', width: 100, render: (_: unknown, person: RecommendedPerson) => <span className={`greeting-status ${person.greeted ? 'is-yes' : 'is-no'}`} title="仅记录通过本平台确认发送成功的招呼">{person.greeted ? '是' : '否'}</span> },
     { title: '标签', key: 'tags', width: 180, render: (_: unknown, person: RecommendedPerson) => <Space size={[0, 4]} wrap>{person.highlights.map((label, i) => <Tag key={`${label}-${i}`}>{label}</Tag>)}{person.hasHistoryChat && <Tag>同事沟通过</Tag>}{person.hasViewed && <Tag>已看过</Tag>}{!person.highlights.length && !person.hasHistoryChat && !person.hasViewed && '—'}</Space> },
     { title: '在线简历', key: 'resume', width: 185, fixed: 'right' as const, render: (_: unknown, person: RecommendedPerson) => person.online_resume ? <div className="resume-table-cell">
       <ResumeThumbnail key={person.online_resume.id} src={resumeScreenshotUrl(person.online_resume)} name={person.name} onPreview={() => setPreview({ name: person.name, screenshot: person.online_resume! })} />
@@ -124,11 +134,11 @@ export function Recommendations({ busy, setBusy, onActivity }: { busy: boolean; 
   const values: Record<string, (p: RecommendedPerson) => string | string[]> = {
     name: p => p.name, base: p => p.baseInfo, expect: p => p.expect, salary: p => p.salary,
     fit: () => '', tags: p => [...p.highlights, ...(p.hasHistoryChat ? ['同事沟通过'] : []), ...(p.hasViewed ? ['已看过'] : [])],
-    resume: p => p.online_resume ? '已读取' : '未读取',
+    resume: p => p.online_resume ? '已读取' : '未读取', greeted: p => p.greeted ? '是' : '否',
   };
   const managedFields: ManagedField<RecommendedPerson>[] = columns.map(c => ({
     id: c.key, name: c.title, width: c.width, fixed: c.key === 'name' ? 'left' : c.key === 'resume' ? 'right' : undefined,
-    type: c.key === 'tags' ? 'multi' : 'text', get: values[c.key],
+    type: c.key === 'tags' ? 'multi' : c.key === 'greeted' ? 'select' : 'text', options: c.key === 'greeted' ? ['是', '否'] : undefined, get: values[c.key],
     render: p => c.render?.(values[c.key]?.(p) as never, p),
   }));
   managedFields.splice(5, 0, { id: 'retrieved', name: '检索日期', type: 'date', width: 130, get: p => beijingDate(p.first_retrieved_at), render: p => <span className={p.first_retrieved_at ? 'retrieval-date' : 'muted'}>{beijingDate(p.first_retrieved_at) || '未读取'}</span> });
@@ -142,7 +152,8 @@ export function Recommendations({ busy, setBusy, onActivity }: { busy: boolean; 
     {batchProgress && !reading && snapshot?.stop_reason === 'scan_limit' && <Alert className="recommendation-error" type="info" showIcon message="已达到本次查找上限，已保存找到的新人；可再次点击继续查找。" />}
     {error && <Alert className="recommendation-error" closable onClose={() => setError(null)} type="warning" showIcon message={error} />}
     <div className="recommendations-meta"><strong>当前岗位：{selectedJob?.label || '请选择推荐岗位'}</strong><span>{snapshot?.captured_at ? `${snapshot.candidates.length} 人累计 · 最近读取于 ${savedTime(snapshot.captured_at)}` : '尚未读取推荐列表'}</span></div>
-    <ManagedTable<RecommendedPerson> scope="recommendations" contextKey={jobKey} rows={snapshot?.candidates ?? []} fields={managedFields} loading={loading} busy={busy} emptyText={selectedJob ? selectedJob.available ? "这个岗位还没有本地人选，点击新增 20 人开始读取" : "此历史岗位暂无本地人选，请刷新岗位列表或切换可用岗位" : "点击刷新 BOSS 岗位，选择岗位后读取推荐人选"} onDeleted={async ids => {
+    {greeting.panel}
+    <ManagedTable<RecommendedPerson> scope="recommendations" contextKey={jobKey} rows={snapshot?.candidates ?? []} fields={managedFields} loading={loading} busy={busy} selectionActions={(people, disabled) => <Button type="primary" size="small" icon={<MessageOutlined />} disabled={disabled || !greeting.ready || !selectedJob?.available || people.length > 200} onClick={() => { setReadAttempted(false); greeting.select(people); }}>一键打招呼（{people.length}）</Button>} emptyText={selectedJob ? selectedJob.available ? "这个岗位还没有本地人选，点击新增 20 人开始读取" : "此历史岗位暂无本地人选，请刷新岗位列表或切换可用岗位" : "点击刷新 BOSS 岗位，选择岗位后读取推荐人选"} onDeleted={async ids => {
       setSnapshot(current => current && ({ ...current, candidates: current.candidates.filter(p => !ids.includes(p.id)) }));
       setPreview(null); setTrash((await fetchRecommendationRecycleBin(undefined, jobKey)).candidates); setJobs((await fetchRecommendationJobs()).jobs);
     }} />

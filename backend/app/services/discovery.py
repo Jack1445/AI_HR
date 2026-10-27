@@ -11,6 +11,8 @@ from app.adapters.boss_cli import BossCliAdapter
 from app.core.json_utils import dumps, loads
 from app.db.models import CandidateRecord, RecommendationSnapshotRecord, RecommendedResumeRecord, RecommendedCandidateRecord, RecommendationRecycleRecord
 from app.core.config import get_settings
+from app.core.greeting_identity import identity as greeting_identity
+from app.db.models import RecommendationGreetingLedgerRecord
 from app.parsers.boss_cli_output import BossCliOutputError
 from app.schemas.discovery import CommunicationSnapshot, RecommendationSnapshot, OnlineResumeScreenshot, ResumeCaptureResult, RecommendedPerson, RecommendationLibrary, RecommendationReadResult, RecommendationRecycleBin, RecycledRecommendation
 from app.schemas.local import LocalCandidateListResponse
@@ -190,6 +192,9 @@ class DiscoveryService:
 
     def recommendations(self, job_key: str | None = None) -> RecommendationLibrary:
         self._prepare_library()
+        # Only a confirmed send by this platform counts. Merely selecting a row,
+        # clicking a button, or discovering a pre-existing BOSS greeting does not.
+        greeted = set(self.db.scalars(select(RecommendationGreetingLedgerRecord.id).where(RecommendationGreetingLedgerRecord.status == 'sent')))
         job = self._job(job_key) if job_key else None
         latest = self.db.get(RecommendationSnapshotRecord, f'job:{job_key}' if job else 'latest')
         result = RecommendationLibrary.model_validate_json(latest.snapshot_json) if latest else RecommendationLibrary()
@@ -204,6 +209,7 @@ class DiscoveryService:
             person = RecommendedPerson.model_validate_json(row.person_json)
             person.id = row.id
             person.source_job = row.source_job
+            person.greeted = bool(person.geekId) and greeting_identity(self.job_key(row.source_job), person.geekId) in greeted
             saved = self.db.get(RecommendedResumeRecord, row.screenshot_id) if row.screenshot_id else None
             person.online_resume = self._resume_view(saved) if saved else None
             first = self.db.get(RecommendationFirstCaptureRecord, row.id)

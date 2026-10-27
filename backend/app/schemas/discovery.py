@@ -55,6 +55,7 @@ class ResumeCaptureResult(BaseModel):
 
 
 class RecommendedPerson(BaseModel):
+    greeted: bool = False
     first_retrieved_at: datetime | None = None
     id: str = ''
     source_job: str = ''

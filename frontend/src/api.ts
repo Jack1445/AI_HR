@@ -147,7 +147,7 @@ export async function fetchPolicy(): Promise<AgentPolicy> { return fetchJson<Age
 export async function fetchDebugStatus(signal?: AbortSignal): Promise<DebugStatus> { return fetchJson<DebugStatus>("/api/debug/status", signal, "读取调试状态失败"); }
 
 export interface OnlineResumeScreenshot { id: string; image_url: string; captured_at: string; }
-export interface RecommendedPerson { first_retrieved_at?: string | null; id: string; source_job: string; online_resume?: OnlineResumeScreenshot | null; geekId: string; name: string; salary: string; baseInfo: string; expect: string; experience: string; advantage: string; highlights: string[]; canGreet: boolean; hasHistoryChat: boolean; hasViewed: boolean; }
+export interface RecommendedPerson { greeted: boolean; first_retrieved_at?: string | null; id: string; source_job: string; online_resume?: OnlineResumeScreenshot | null; geekId: string; name: string; salary: string; baseInfo: string; expect: string; experience: string; advantage: string; highlights: string[]; canGreet: boolean; hasHistoryChat: boolean; hasViewed: boolean; }
 export interface RecommendationSnapshot { job_label: string; limit: number; candidates: RecommendedPerson[]; captured_at: string | null; stop_reason?: string; }
 export interface RecommendationReadResult extends RecommendationSnapshot { added_ids: string[]; }
 export interface RecycledRecommendation { job_key: string; scope_label: string; id: string; name: string; baseInfo: string; }

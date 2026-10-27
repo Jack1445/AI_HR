@@ -20,6 +20,6 @@ def health() -> HealthResponse:
     return HealthResponse(
         status="ok",
         service="ai-hr-backend",
-        version="0.3.6",
+        version="0.4.4",
         timestamp=datetime.now(timezone.utc),
     )

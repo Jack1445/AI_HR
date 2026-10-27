@@ -9,7 +9,7 @@ $frontendDir = Join-Path $projectRoot "frontend"
 $pythonExe = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $frontendPort = 5173
 $backendPort = 8000
-$backendVersion = "0.3.6"
+$backendVersion = "0.4.4"
 $chromeCandidates = @(
     (Join-Path ${env:LOCALAPPDATA} "Google\Chrome\Application\chrome.exe"),
     (Join-Path ${env:ProgramFiles} "Google\Chrome\Application\chrome.exe"),

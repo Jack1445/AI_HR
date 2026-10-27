@@ -255,6 +255,45 @@ class ResumeDocumentRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 
+class AIConnectionRecord(Base):
+    __tablename__ = 'ai_connection'
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default='default')
+    config_json: Mapped[str] = mapped_column(Text, default='{}')
+    encrypted_key: Mapped[str] = mapped_column(Text, default='')
+
+
+class AIManagedRunRecord(Base):
+    __tablename__ = 'ai_managed_runs'
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    status: Mapped[str] = mapped_column(String(32), default='queued', index=True)
+    config_json: Mapped[str] = mapped_column(Text)
+    selection_json: Mapped[str] = mapped_column(Text)
+    items_json: Mapped[str] = mapped_column(Text)
+    error: Mapped[str] = mapped_column(Text, default='')
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RecommendationGreetingBatchRecord(Base):
+    __tablename__ = 'recommendation_greeting_batches'
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    job_key: Mapped[str] = mapped_column(String(64), index=True)
+    job_label: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default='queued', index=True)
+    items_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RecommendationGreetingLedgerRecord(Base):
+    __tablename__ = 'recommendation_greeting_ledger'
+    # Retain only opaque identity and outcome, even if a local candidate is deleted.
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
 class AgentTaskRecord(Base):
     __tablename__ = "agent_tasks"
 

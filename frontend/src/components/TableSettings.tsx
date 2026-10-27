@@ -43,7 +43,7 @@ export function TableSettings({ initial, state, fields: baseFields, tab, busy, e
         <div className="field-config-row"><button className="table-drag-handle" draggable onDragStart={e => { setDragged(column.id); e.dataTransfer.setData('text/plain', column.id); }} onDragEnd={() => setDragged('')} title="拖动调整字段顺序"><HolderOutlined /></button>
           <Checkbox aria-label={`显示${field.name}`} checked={!column.hidden} onChange={e => changeColumn(column.id, { hidden: !e.target.checked })} />
           <Input aria-label={`${field.name}显示名称`} maxLength={60} value={column.name || field.name} onChange={e => custom ? updateCustom(field.id, { name: e.target.value }) : changeColumn(column.id, { name: e.target.value })} />
-          <InputNumber aria-label={`${field.name}列宽`} min={80} max={800} value={column.width} onChange={value => changeColumn(column.id, { width: value || 160 })} />
+          <InputNumber aria-label={`${field.name}列宽`} min={80} max={800} precision={0} step={1} value={column.width} onChange={value => changeColumn(column.id, { width: Math.round(value ?? 160) })} />
           <Select aria-label={`${field.name}固定位置`} value={column.fixed} onChange={fixed => changeColumn(column.id, { fixed })} options={[{ value: '', label: '不固定' }, { value: 'left', label: '左侧' }, { value: 'right', label: '右侧' }]} />
           {custom ? <Button danger type="text" aria-label={`删除字段${field.name}`} icon={<DeleteOutlined />} onClick={() => removeField(field.id)} /> : <Tag className="system-field-tag">系统</Tag>}
         </div>

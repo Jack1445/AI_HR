@@ -7,6 +7,7 @@ from app.db.session import get_db
 from app.schemas.local import ActionCreate, ActionResponse
 from app.services.actions import ActionService
 from app.services.boss_readonly import get_boss_cli_adapter
+from app.services.operation_lock import manual_read_lock
 
 router = APIRouter(prefix="/api/actions", tags=["controlled-actions"])
 
@@ -30,8 +31,11 @@ def list_actions(limit: int = Query(default=100, ge=1, le=500), svc: ActionServi
 
 @router.post("/{action_id}/confirm", response_model=ActionResponse)
 async def confirm_action(action_id: str, x_actor: str | None = Header(default=None), svc: ActionService = Depends(service)) -> ActionResponse:
+    if manual_read_lock.locked():
+        raise HTTPException(409, 'BOSS 正在执行其他任务，请等待完成后再确认')
     try:
-        return await svc.confirm(action_id, x_actor or "local")
+        async with manual_read_lock:
+            return await svc.confirm(action_id, x_actor or "local")
     except (LookupError, ValueError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
