@@ -15,6 +15,7 @@ from app.api.routes.discovery import router as discovery_router
 from app.api.routes.tables import router as tables_router
 from app.api.routes.ai import router as ai_router
 from app.api.routes.recommendation_greetings import router as greetings_router
+from app.api.routes.conversations import router as conversations_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.base import Base
@@ -63,3 +64,4 @@ app.include_router(discovery_router)
 app.include_router(tables_router)
 app.include_router(ai_router)
 app.include_router(greetings_router)
+app.include_router(conversations_router)

@@ -199,3 +199,13 @@ export interface RecommendationJob { id: string; label: string; available: boole
 export interface RecommendationJobs { jobs: RecommendationJob[]; current_job_key?: string }
 export const fetchRecommendationJobs = (signal?: AbortSignal) => fetchJson<RecommendationJobs>('/api/local/recommendations/jobs', signal, '读取本地推荐岗位失败');
 export const readRecommendationJobs = () => fetchJson<RecommendationJobs>('/api/local/recommendations/jobs/read', undefined, '刷新 BOSS 推荐岗位失败', { method: 'POST' });
+
+export type ConversationMessage = { text: string; time: string; from: 'friend' | 'myself' | 'system' };
+export type Conversation = { messages: ConversationMessage[] };
+export const fetchConversation = (candidateId: string, jobId: string) => fetchJson<Conversation>(`/api/conversations/${encodeURIComponent(candidateId)}?job_id=${encodeURIComponent(jobId)}`, undefined, '读取聊天失败');
+export const sendConversation = (candidateId: string, jobId: string, text: string, requestId: string) => fetchJson<{ status: string; error: string; messages: ConversationMessage[] }>(`/api/conversations/${encodeURIComponent(candidateId)}/send`, undefined, '发送消息失败', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ job_id: jobId, text, request_id: requestId, confirmed: true }) });
+export type MessageTemplate = { id: string; name: string; content: string };
+export const fetchMessageTemplates = () => fetchJson<MessageTemplate[]>('/api/local/templates', undefined, '读取话术失败');
+export const createMessageTemplate = (name: string, content: string) => fetchJson<MessageTemplate>('/api/local/templates', undefined, '保存话术失败', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, content }) });
+export const updateMessageTemplate = (id: string, content: string) => fetchJson<MessageTemplate>(`/api/local/templates/${encodeURIComponent(id)}`, undefined, '保存话术失败', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) });
+export const deleteMessageTemplate = (id: string) => fetchJson<void>(`/api/local/templates/${encodeURIComponent(id)}`, undefined, '删除话术失败', { method: 'DELETE' });

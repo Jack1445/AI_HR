@@ -186,6 +186,7 @@ export function AIManagement({ active, onOpen }: { active: boolean; onOpen: () =
                 <Form.Item label="最大输出 Token"><InputNumber min={128} max={65536} step={512} value={config.max_tokens} onChange={v => edit('max_tokens', v ?? 4096)} /></Form.Item>
                 <Form.Item label="Token 参数名" extra="多数旧版兼容接口使用 max_tokens；按服务商文档选择。"><Select value={config.token_parameter} onChange={v => edit('token_parameter', v)} options={[{ value: 'max_completion_tokens', label: 'max_completion_tokens' }, { value: 'max_tokens', label: 'max_tokens' }]} /></Form.Item>
                 <Form.Item label="单人请求超时（秒）"><InputNumber min={15} max={600} value={config.timeout_seconds} onChange={v => edit('timeout_seconds', v ?? 120)} /></Form.Item>
+                <Form.Item label="同时评估人数" extra="允许 1–10 人并行；默认 3 人。受模型平台限流影响，人数越高越可能遇到请求受限。"><InputNumber aria-label="同时评估人数" min={1} max={10} step={1} precision={0} value={config.max_concurrency} onChange={v => edit('max_concurrency', v ?? 3)} /></Form.Item>
               </> }]} />
               <Button block icon={<ApiOutlined />} disabled={busy || !config.model.trim()} loading={working === 'test'} onClick={() => void action('test', async () => { await persist(); const r = await aiRequest<{ elapsed_seconds: number }>('/test', 'POST'); setConnection(`连接成功 · ${r.elapsed_seconds} 秒`); })}>保存并测试连接</Button>
               <div className="ai-small-note">测试只发送简短文字，不包含候选人资料；会产生少量 API 用量。图片能力以实际分析为准。</div>

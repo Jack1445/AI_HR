@@ -356,6 +356,17 @@ def test_session_header_option_round_trips_in_config(store):
     assert svc.config()[0].send_session_id is True
 
 
+def test_concurrency_setting_is_bounded_and_saved(store):
+    db, _, _ = store
+    svc = ai.AIManagementService(db)
+    assert svc.public_config()['max_concurrency'] == 3
+    svc.save_config(AIConfigSave(max_concurrency=10))
+    assert svc.public_config()['max_concurrency'] == 10
+    for value in (0, 11, 1.5):
+        with pytest.raises(ValidationError):
+            AIConfig(max_concurrency=value)
+
+
 @pytest.mark.parametrize('code', [401, 429, 302, 500])
 def test_upstream_errors_do_not_expose_response_or_keys(monkeypatch, code):
     original = httpx.AsyncClient
@@ -392,11 +403,109 @@ def test_background_analysis_freezes_prompt_progress_results_and_does_not_change
     assert len(svc.catalog('recommendations')['candidates']) == 3
 
 
+def test_parallel_analysis_keeps_results_with_their_candidates_and_updates_progress(store, monkeypatch):
+    db, factory, _ = store
+    people(db)
+    svc = configured(db)
+    row, config, key = svc.create_run(selection(['person-0', 'person-1', 'person-2']))
+    config = config.model_copy(update={'max_concurrency': 2})
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    active = peak = started = 0
+
+    async def fake(config, key, prompt, data, image):
+        nonlocal active, peak, started
+        active += 1
+        peak = max(peak, active)
+        started += 1
+        if started == 2:
+            entered.set()
+        await release.wait()
+        await asyncio.sleep(0.02 if data['baseInfo'] == '基本信息 0' else 0)
+        active -= 1
+        return {'output': data['baseInfo'], 'usage': {}, 'elapsed_seconds': 0.1}
+
+    monkeypatch.setattr(ai, 'call_model', fake)
+
+    async def run():
+        task = asyncio.create_task(ai.execute_run(row.id, config, key, factory))
+        await asyncio.wait_for(entered.wait(), 1)
+        with factory() as reader:
+            progress = svc.run_view(reader.get(AIManagedRunRecord, row.id))
+        assert [item['status'] for item in progress['items']] == ['running', 'running', 'queued']
+        release.set()
+        await asyncio.wait_for(task, 2)
+
+    asyncio.run(run())
+    db.expire_all()
+    result = svc.run_view(db.get(AIManagedRunRecord, row.id))
+    assert peak == 2 and started == 3
+    assert result['status'] == 'success' and result['completed'] == 3
+    assert [item['output'] for item in result['items']] == ['基本信息 0', '基本信息 1', '基本信息 2']
+
+
+def test_large_selection_queues_beyond_concurrency_limit(store, monkeypatch):
+    db, factory, _ = store
+    count = 67
+    db.add_all(RecommendedCandidateRecord(
+        id=f'person-{i}', identity_key=f'identity-{i}', source_job='技术岗位',
+        person_json=dumps({'name': f'候选人 {i}', 'baseInfo': f'基本信息 {i}'})
+    ) for i in range(count))
+    db.commit()
+    svc = configured(db)
+    ids = [f'person-{i}' for i in range(count)]
+    row, config, key = svc.create_run(selection(ids))
+    config = config.model_copy(update={'max_concurrency': 10})
+    active = peak = 0
+
+    async def fake(config, key, prompt, data, image):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.001)
+        active -= 1
+        return {'output': data['name'], 'usage': {}, 'elapsed_seconds': 0.001}
+
+    monkeypatch.setattr(ai, 'call_model', fake)
+    asyncio.run(ai.execute_run(row.id, config, key, factory))
+    db.expire_all()
+    result = svc.run_view(db.get(AIManagedRunRecord, row.id))
+    assert peak == 10
+    assert result['status'] == 'success' and result['completed'] == count
+    assert [item['output'] for item in result['items']] == [f'候选人 {i}' for i in range(count)]
+
+
+def test_fatal_parallel_error_stops_unsent_items_but_keeps_inflight_result(store, monkeypatch):
+    db, factory, _ = store
+    people(db)
+    svc = configured(db)
+    row, config, key = svc.create_run(selection(['person-0', 'person-1', 'person-2']))
+    config = config.model_copy(update={'max_concurrency': 2})
+    calls = []
+
+    async def fake(config, key, prompt, data, image):
+        calls.append(data['baseInfo'])
+        await asyncio.sleep(0.01 if data['baseInfo'] == '基本信息 0' else 0.04)
+        if data['baseInfo'] == '基本信息 0':
+            raise ai.AIRequestError('请求受限', fatal=True)
+        return {'output': data['baseInfo'], 'usage': {}, 'elapsed_seconds': 0.04}
+
+    monkeypatch.setattr(ai, 'call_model', fake)
+    asyncio.run(ai.execute_run(row.id, config, key, factory))
+    db.expire_all()
+    result = svc.run_view(db.get(AIManagedRunRecord, row.id))
+    assert calls == ['基本信息 0', '基本信息 1']
+    assert [item['status'] for item in result['items']] == ['failed', 'success', 'failed']
+    assert result['items'][2]['error'] == '因前面的连接或配置错误而停止，未发送此条资料'
+    assert result['status'] == 'partial' and result['error'] == '请求受限'
+
+
 def test_fatal_failure_stops_remaining_calls_and_restart_is_not_retried(store, monkeypatch):
     db, factory, _ = store
     people(db)
     svc = configured(db)
     row, config, key = svc.create_run(selection(['person-0', 'person-1']))
+    config = config.model_copy(update={'max_concurrency': 1})
     calls = []
     async def fake(*args):
         calls.append(1)

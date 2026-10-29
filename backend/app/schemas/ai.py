@@ -21,6 +21,7 @@ class AIConfig(BaseModel):
     token_parameter: Literal['max_completion_tokens', 'max_tokens'] = 'max_completion_tokens'
     send_session_id: bool = False
     timeout_seconds: int = Field(default=120, ge=15, le=600)
+    max_concurrency: int = Field(default=3, ge=1, le=10)
     prompt: str = Field(default=DEFAULT_PROMPT, max_length=20000)
 
     @field_validator('base_url')
@@ -74,7 +75,7 @@ class AISelection(BaseModel):
     model_config = ConfigDict(extra='forbid')
     source: Literal['recommendations', 'communications']
     job_id: str = Field(default='', max_length=64)
-    candidate_ids: list[str] = Field(min_length=1, max_length=20)
+    candidate_ids: list[str] = Field(min_length=1)
     include_images: bool = False
     job_context: str = Field(default='', max_length=10000)
 

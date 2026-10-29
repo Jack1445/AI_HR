@@ -370,7 +370,7 @@ async function waitForOpenedCandidateChat(page: Page, expectedName: string): Pro
   );
 }
 
-async function scrapeCurrentChatMessages(page: Page): Promise<ChatMessageSnapshot> {
+export async function scrapeCurrentChatMessages(page: Page): Promise<ChatMessageSnapshot> {
   return (await page.evaluate(`(() => {
     const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
     const isVisible = (el) => {

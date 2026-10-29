@@ -9,6 +9,7 @@ import {
 } from '../browser/index.js';
 import { isBossChatIndexUrl } from '../common/auth.js';
 import { withBossSessionPage } from '../common/boss_session_page.js';
+import type { Page } from 'puppeteer-core';
 import { runRequestAttachmentResume } from './action.js';
 
 export type SendChatMessageOptions = {
@@ -19,15 +20,25 @@ export type SendChatMessageOptions = {
 
 export async function runSendChatMessage(options: SendChatMessageOptions): Promise<string> {
   const messageText = (options.text ?? '').trim();
-  const signal = options.signal;
-  const requestResume = options.requestResume ?? false;
 
   if (!messageText) {
     throw new Error('请指定 --text <消息> 或 -t <消息>。');
   }
 
   try {
-    return await withBossSessionPage(async (page) => {
+    return await withBossSessionPage(async (page) => sendChatMessageOnPage(page, options));
+  } catch (e) {
+    if (e instanceof Error) throw e;
+    throw new Error(`发送消息失败：${String(e)}`);
+  }
+}
+
+export async function sendChatMessageOnPage(page: Page, options: SendChatMessageOptions): Promise<string> {
+  const messageText = (options.text ?? '').trim();
+  const signal = options.signal;
+  const requestResume = options.requestResume ?? false;
+  if (!messageText) throw new Error('消息不能为空');
+  try {
       const currentUrl = page.url();
       if (!isBossChatIndexUrl(currentUrl)) {
         throw new Error('请先进入聊天列表页（/web/chat/index）并打开候选人聊天。');
@@ -67,7 +78,7 @@ export async function runSendChatMessage(options: SendChatMessageOptions): Promi
       await sleepRandom(1200, 2800, signal);
       const resumeResult = await runRequestAttachmentResume(page);
       return `已发送消息：${messageText}\n${resumeResult}`;
-    });
+
   } catch (e) {
     if (e instanceof Error) {
       throw e;

@@ -150,6 +150,10 @@ class TemplateCreate(BaseModel):
     content: str = Field(min_length=1, max_length=10000)
 
 
+class TemplateUpdate(BaseModel):
+    content: str = Field(min_length=1, max_length=10000)
+
+
 class ResumeResponse(BaseModel):
     id: str
     candidate_id: str

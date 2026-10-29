@@ -26,6 +26,7 @@ import {
 } from '../toolset/index.js';
 import { printBossInteractiveBanner } from './banner.js';
 import { runClassifyCommunications } from '../toolset/communication.js';
+import { runConversation } from '../toolset/conversation.js';
 import { runDownloadAttachment } from '../toolset/download-attachment.js';
 import { runGetChatHistory, runInspectChatScroll, runInspectChatIdentities } from '../toolset/list.js';
 import { validateSince } from '../toolset/chat-history.js';
@@ -167,6 +168,8 @@ function printHelp(): void {
   boss send [--text <内容>] [-t <内容>] [--request-resume]
       仅发送文本消息（等价于在当前会话输入框发送后回车）
       --request-resume：发送后延迟片刻自动执行「求简历」操作
+  boss conversation --target <JSON对象> [--text <单行消息>]
+      从沟通列表顶部按姓名和岗位查找，优先核对会话编号，同名时核对基本信息；最多检查 250 条或 35 秒；传 --text 才发送并验证新消息
   boss positions
       读取当前职位列表（含开放/待开放/已关闭状态）
   boss jd <name>
@@ -510,6 +513,16 @@ export async function executeCommand(argv: string[]): Promise<string> {
     }
     const requestResume = flags.has('request-resume');
     return implSendMessage({ text, requestResume });
+  }
+
+  if (cmd === 'conversation') {
+    const { opts, rest, flags } = parseOpts(tail);
+    if (rest.length || flags.size || !opts.target || Object.keys(opts).some(key => !['target', 'text'].includes(key))) {
+      die('用法: conversation --target <JSON对象> [--text <消息>]');
+    }
+    let target: unknown;
+    try { target = JSON.parse(opts.target); } catch { die('会话目标不是有效 JSON'); }
+    return runConversation(target, opts.text ?? '');
   }
 
   if (cmd === 'positions') {

@@ -278,3 +278,16 @@ h2, h3 { margin: 0; }
 
 .heading-actions .sync-range-control .ant-btn { height: 28px; }
 @media (max-width: 760px) { .heading-actions { flex-wrap: wrap; } .sync-range-control { flex-basis: 100%; justify-content: flex-start; } }
+.communication-messaging { margin: 20px 0; padding: 18px; border: 1px solid #dce9e2; border-radius: 14px; background: #f8fbf9; }
+.communication-messages { max-height: 320px; overflow-y: auto; margin: 14px 0; padding: 12px; border-radius: 10px; background: #fff; }
+.communication-message { display: flex; align-items: flex-start; gap: 8px; padding: 8px 0; border-bottom: 1px solid #eef2ef; overflow-wrap: anywhere; }
+.communication-message.myself { background: #f3faf6; }
+.communication-message span { flex: 1; white-space: pre-wrap; }
+.communication-message small { color: #889b92; }
+.communication-batch-names { max-height: 110px; overflow-y: auto; }
+.communication-batch-results { max-height: 230px; overflow-y: auto; margin-top: 16px; padding: 12px; background: #f4f8f5; border-radius: 10px; }
+.communication-batch-results p { margin: 7px 0; }
+.communication-template-option { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.communication-template-toolbar { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
+.communication-template-select { width: min(100%, 360px); }
+.communication-text-hint { color: #9a6b23; font-size: 12px; margin: 8px 0 0; }

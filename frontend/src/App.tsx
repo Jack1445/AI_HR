@@ -10,6 +10,7 @@ import { AIManagement } from './components/AIManagement';
 import type { RecommendationActivity } from './recommendationBatch';
 import { ManagedTable, type ManagedField } from './components/ManagedTable';
 import { CommunicationRecycleBin } from './components/CommunicationRecycleBin';
+import { BulkMessageModal, ConversationPanel } from './components/CommunicationMessaging';
 import { beijingDate, type CellValue } from './tableModel';
 import { verifyCommunications } from './api';
 import { selectVerificationCandidates, verifyCommunicationBatch, type CommunicationProgress, type CommunicationResult } from './communicationBatch';
@@ -62,6 +63,8 @@ function App() {
   const [match, setMatch] = useState<MatchResult | null>(null);
   const [action, setAction] = useState<ActionResponse | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
+  const [messageRecipients, setMessageRecipients] = useState<LocalCandidate[]>([]);
+  const [messageBatchOpen, setMessageBatchOpen] = useState(false);
   const detailRequest = useRef(0);
   const candidateLoadGeneration = useRef(0);
   const [loading, setLoading] = useState(true);
@@ -351,7 +354,7 @@ function App() {
               <div className="communication-read-note"><span>仅同步并核验推荐牛人库中仍保留、显示“已打招呼：是”且能唯一匹配的人选；发现对方待处理的附件简历请求会自动点击“同意”。BOSS 会话列表仍需遍历所选日期范围；打开会话可能将消息标为已读。</span><CommunicationRecycleBin disabled={busy || manualBusy} /></div>
             </div>}
             {candidateError && <Alert type="warning" showIcon message={candidateError} action={<Button size="small" onClick={() => setRefreshToken((value) => value + 1)}>重试</Button>} />}
-            {!selectedJob ? <div className="candidate-empty"><TeamOutlined /><h3>{jobs.length ? "没有符合筛选条件的岗位" : "从同步第一个岗位开始"}</h3><p>{jobs.length ? "调整左侧筛选条件，即可查看对应候选人。" : "点击上方同步按钮，读取你的岗位与候选人。"}</p></div> : <ManagedTable<LocalCandidate> scope="communications" rows={filteredCandidates} fields={managedFields} loading={candidateLoading || candidateLoadedToken !== refreshToken} busy={busy || manualBusy} contextKey={`${selectedJob.id}:${communicationFilter}`} onLocalSave={saveLocalCells} onDeleted={ids => { setCandidates(items => items.filter(i => !ids.includes(i.id))); setCandidateTotal(count => count - ids.length); if (selectedCandidate && ids.includes(selectedCandidate.id)) closeDrawer(); }} selectionActions={(rows, locked) => <Tooltip title="仅下载双方已沟通且对方已提供的 PDF 附件；按岗位保存到本地文件夹"><Button size="small" icon={<DownloadOutlined />} disabled={locked || !rows.some(row => row.communication_status === 'mutual')} onClick={() => void downloadSelectedAttachments(rows)}>下载附件简历</Button></Tooltip>} emptyText="该岗位暂无此类沟通候选人" />}
+            {!selectedJob ? <div className="candidate-empty"><TeamOutlined /><h3>{jobs.length ? "没有符合筛选条件的岗位" : "从同步第一个岗位开始"}</h3><p>{jobs.length ? "调整左侧筛选条件，即可查看对应候选人。" : "点击上方同步按钮，读取你的岗位与候选人。"}</p></div> : <ManagedTable<LocalCandidate> scope="communications" rows={filteredCandidates} fields={managedFields} loading={candidateLoading || candidateLoadedToken !== refreshToken} busy={busy || manualBusy} contextKey={`${selectedJob.id}:${communicationFilter}`} onLocalSave={saveLocalCells} onDeleted={ids => { setCandidates(items => items.filter(i => !ids.includes(i.id))); setCandidateTotal(count => count - ids.length); if (selectedCandidate && ids.includes(selectedCandidate.id)) closeDrawer(); }} selectionActions={(rows, locked) => <Space><Button size="small" disabled={locked || !rows.length} onClick={() => { setMessageRecipients([...rows]); setMessageBatchOpen(true); }}>批量发送话术（{rows.length}）</Button><Tooltip title="仅下载双方已沟通且对方已提供的 PDF 附件；按岗位保存到本地文件夹"><Button size="small" icon={<DownloadOutlined />} disabled={locked || !rows.some(row => row.communication_status === 'mutual')} onClick={() => void downloadSelectedAttachments(rows)}>下载附件简历</Button></Tooltip></Space>} emptyText="该岗位暂无此类沟通候选人" />}
             <div className="candidate-footnote"><CheckOutlined /> 本地标注会保留，不会被后续同步覆盖</div>
           </section>
         </div>
@@ -365,11 +368,13 @@ function App() {
           <div className="profile-heading"><Avatar size={52}>{selectedCandidate.name.slice(0, 1)}</Avatar><div><h2>{selectedCandidate.name}</h2><Tag color="green">{stageLabels[selectedCandidate.stage] ?? selectedCandidate.stage}</Tag></div></div>
           <Descriptions column={1} size="small" className="profile-info"><Descriptions.Item label="关联岗位">{selectedCandidate.job_titles.join("、") || "未绑定"}</Descriptions.Item><Descriptions.Item label="负责人">{selectedCandidate.owner || "未分配"}</Descriptions.Item><Descriptions.Item label="标签">{selectedCandidate.tags.join("、") || "暂无"}</Descriptions.Item><Descriptions.Item label="最近消息">{selectedCandidate.latest_message || "暂无"}</Descriptions.Item></Descriptions>
           <div className="communication-detail"><h3>{communicationLabels[selectedCandidate.communication_status ?? 'unknown']}</h3><p>{selectedCandidate.communication_error || (selectedCandidate.communication_checked_at ? `核验时间：${formatTime(selectedCandidate.communication_checked_at)}` : '同步数据后会自动核验日期范围内候选人，也可点击列表上方“重新同步核验”。')}</p>{selectedCandidate.communication_evidence && <><p>我方消息：{selectedCandidate.communication_evidence.recruiter_sent ? '已检测到' : '当前记录未检测到'} · 对方消息：{selectedCandidate.communication_evidence.candidate_sent ? '已检测到' : '当前记录未检测到'}</p><p>申请附件入口：{selectedCandidate.communication_evidence.request_resume_enabled === true ? '可用' : selectedCandidate.communication_evidence.request_resume_enabled === false ? '不可用' : '未识别'} · 附件卡片：{selectedCandidate.communication_evidence.attachment_present ? '已检测到（未下载）' : '当前记录未检测到'}</p></>}</div>
+          {selectedJob && selectedCandidate.job_ids.includes(selectedJob.id) && <ConversationPanel key={`${selectedCandidate.id}:${selectedJob.id}`} candidate={selectedCandidate} jobId={selectedJob.id} />}
           <Space wrap><Button type="primary" loading={detailBusy} onClick={() => void detailOperation("match")}>生成匹配建议</Button><Button disabled={detailBusy} onClick={() => void detailOperation("draft")}>生成消息草稿</Button></Space>
           {match && <Alert className="detail-alert" message={`匹配分 ${match.score} · ${match.recommendation}`} description={<Space direction="vertical"><span>优势：{match.strengths.join("；") || "暂无充分证据"}</span><span>待补充：{match.risks.join("；") || "暂无"}</span><span>待确认：{match.questions.join("；") || "暂无"}</span></Space>} type="info" showIcon />}
           {action && <Alert className="detail-alert" message={`消息草稿 · ${({ pending_confirmation: "待确认", success: "已完成", blocked: "未执行", failed: "失败", cancelled: "已取消" })[action.status] ?? action.status}`} description={<Space direction="vertical"><span>{String(action.payload.text ?? "")}</span>{Boolean(action.result.reason) && <span>{String(action.result.reason)}</span>}<Button size="small" type="primary" loading={detailBusy} disabled={action.status !== "pending_confirmation"} onClick={() => void detailOperation("confirm")}>人工确认</Button></Space>} type={action.status === "blocked" ? "warning" : "info"} />}
         </>}
       </Drawer>
+      <BulkMessageModal open={messageBatchOpen} onClose={() => setMessageBatchOpen(false)} rows={messageRecipients} jobId={selectedJob?.id ?? ''} />
     </div>
   </ConfigProvider>;
 }

@@ -22,16 +22,23 @@ AI Recruiter 是一个基于 `boss-cli` 的本地招聘工作台。最终版本�
 AI_HR/
 ├── backend/                 # FastAPI、SQLAlchemy、Alembic 和业务服务
 ├── frontend/                # React + TypeScript + Vite + Ant Design
-├── boss-cli/                # Jack1445/boss-cli 子模块，包含本项目验证过的修复
+├── boss-cli/                # 内置 BOSS CLI 完整源码（普通目录）
 ├── docs/                    # boss-cli 调研和集成边界
 └── AI_Recruiter_项目开发计划.md
 ```
 
 ## 环境和启动
 
-要求 Python 3.11+、Node.js 20+、本机 Chrome/Chromium。项目使用根目录 `.venv`，不需要 conda。
+Windows 首次部署见 [环境依赖与部署清单](DEPLOY_WINDOWS.md)。要求 Python 3.11+、Node.js 20+、本机 Google Chrome 和 Git。`boss-cli/` 已包含在本仓库，普通 `git clone` 即可获得完整源码，不需要子模块。安装脚本会创建根目录 `.venv`、安装前后端依赖并构建 BOSS CLI。
 
-首次克隆主项目时使用 `git clone --recurse-submodules`；已有项目拉取更新后，运行 `git submodule sync --recursive` 和 `git submodule update --init --recursive`，再在 `boss-cli/` 中安装依赖并构建。子模块固定到 [Jack1445/boss-cli](https://github.com/Jack1445/boss-cli) 中验证过的提交，上游为 [joohw/boss-cli](https://github.com/joohw/boss-cli)。
+```powershell
+git clone https://github.com/Jack1445/AI_HR.git
+Set-Location AI_HR
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\setup-ai-hr.ps1
+.\start-ai-hr.bat
+```
+
+以下为手动开发启动方式。
 
 PowerShell：
 
@@ -59,7 +66,7 @@ npm install
 npm run dev
 ```
 
-打开 <http://localhost:5173>；健康检查为 <http://localhost:8000/api/health>。后端从项目根目录启动，默认才能正确找到 `boss-cli/dist/cli/index.js`。首次使用 BOSS 前，在 `boss-cli/` 中执行 `npm install`、`npm run build`，再运行 `node dist/cli/index.js login` 完成人工登录。
+打开 <http://localhost:5173>；健康检查为 <http://localhost:8000/api/health>。后端从项目根目录启动，默认才能正确找到 `boss-cli/dist/cli/index.js`。手动部署时，先在 `boss-cli/` 中执行 `npm ci`、`npm run build`。首次使用 BOSS 时，在工具打开的 Chrome 窗口内人工登录。
 
 ### 一键启动（PowerShell）
 
@@ -191,7 +198,7 @@ npm run dev
 
 开发数据库由 Alembic revision `20261018_0001` 创建，应用启动时也会安全地补齐本地开发表。运行数据、简历文件、Cookie、联系方式和 `.env` 都被 `.gitignore` 排除。常规应用日志只记录命令错误摘要和审计元数据；诊断同步日志会保存 CLI 的完整标准输出和错误输出，便于定位页面或登录问题，但不读取或写入浏览器 Cookie、密码等登录凭证。
 
-`boss-cli` 仍是独立 GPL-3.0 子模块，AI Recruiter 通过直接子进程适配器调用它，不复制其内部浏览器逻辑。BOSS 页面结构或登录状态变化时，只读同步会失败并保留已有本地数据；这类失败需要先在 `boss-cli` 中修复登录或页面访问，再重新同步。
+`boss-cli` 源码直接保存在本仓库，保留其 GPL-3.0 许可证；AI Recruiter 通过子进程适配器调用它。BOSS 页面结构或登录状态变化时，需要检查 `boss-cli` 的浏览器操作并重新同步。
 
 当前 Agent 任务在本地请求内串行执行，具备任务状态、失败重试和取消接口；生产部署前仍应在反向代理或应用层接入真实身份认证、角色权限和后台队列。`X-Actor` 只用于本地审计标识，不能替代生产认证。
 

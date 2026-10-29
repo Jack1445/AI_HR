@@ -25,11 +25,15 @@ boss-cli/.env
 *.tmp
 *.tsbuildinfo
 
-# boss-cli local runtime (the source itself is tracked as a submodule)
+# boss-cli local runtime (source is part of this repository)
 boss-cli/node_modules/
 boss-cli/dist/
 boss-cli/.cache/
 boss-cli/jd/
+
+# Local one-off diagnostics and test scratch files
+backend/probe-cache-temp.py
+backend/pytest_tmp_*/
 
 # Editors and OS files
 .idea/

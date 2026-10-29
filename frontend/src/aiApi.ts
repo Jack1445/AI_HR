@@ -1,6 +1,6 @@
 export interface AIConfig {
   base_url: string; model: string; temperature: number | null; max_tokens: number;
-  token_parameter: 'max_completion_tokens' | 'max_tokens'; timeout_seconds: number;
+  token_parameter: 'max_completion_tokens' | 'max_tokens'; timeout_seconds: number; max_concurrency: number;
   send_session_id: boolean;
   prompt: string; has_key: boolean;
 }

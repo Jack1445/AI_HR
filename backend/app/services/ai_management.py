@@ -355,32 +355,50 @@ async def execute_run(run_id: str, config: AIConfig, key: str, session_factory=N
         row.status = 'running'
         items = loads(row.items_json, [])
         db.commit()
+        pending: dict[asyncio.Task, int] = {}
+        next_index = 0
+        fatal_error = False
+
+        async def request(item: dict, image: bytes | None) -> dict:
+            async with asyncio.timeout(config.timeout_seconds + 5):
+                return await call_model(config, key, config.prompt, item['data'], image)
+
         try:
-            for item in items:
-                item['status'] = 'running'
-                row.items_json = dumps(items)
-                db.commit()
-                try:
-                    # Recheck deletion immediately before sending each record.
-                    source = loads(row.selection_json, {})['source']
-                    current = db.get(RecommendedCandidateRecord if source == 'recommendations' else CandidateRecord, item['candidate_id'], populate_existing=True)
-                    if current is None or (source == 'recommendations' and current.deleted_at is not None):
-                        raise ValueError('此候选人已删除，已跳过发送')
-                    if source == 'communications' and db.get(CommunicationRecycleRecord, current.remote_id):
-                        raise ValueError('此候选人已移入回收站，已跳过发送')
-                    image = AIManagementService(db).image_bytes(item['image_id']) if item['image_id'] else None
-                    # Do not hold a SQLite transaction during a network request.
+            source = loads(row.selection_json, {})['source']
+            while next_index < len(items) or pending:
+                while next_index < len(items) and len(pending) < config.max_concurrency and not fatal_error:
+                    index = next_index
+                    next_index += 1
+                    item = items[index]
+                    item['status'] = 'running'
+                    try:
+                        # Recheck deletion immediately before starting each request.
+                        current = db.get(RecommendedCandidateRecord if source == 'recommendations' else CandidateRecord, item['candidate_id'], populate_existing=True)
+                        if current is None or (source == 'recommendations' and current.deleted_at is not None):
+                            raise ValueError('此候选人已删除，已跳过发送')
+                        if source == 'communications' and db.get(CommunicationRecycleRecord, current.remote_id):
+                            raise ValueError('此候选人已移入回收站，已跳过发送')
+                        image = AIManagementService(db).image_bytes(item['image_id']) if item['image_id'] else None
+                        pending[asyncio.create_task(request(item, image))] = index
+                    except ValueError as exc:
+                        item.update(status='failed', error=str(exc))
+                    row.items_json = dumps(items)
                     db.commit()
-                    async with asyncio.timeout(config.timeout_seconds + 5):
-                        answer = await call_model(config, key, config.prompt, item['data'], image)
-                    item.update(answer, status='success')
-                except (ValueError, TimeoutError) as exc:
-                    item.update(status='failed', error=str(exc) if isinstance(exc, ValueError) else '模型请求超时')
-                    if isinstance(exc, AIRequestError) and exc.fatal:
-                        row.error = str(exc)
-                        break
-                row.items_json = dumps(items)
-                db.commit()
+                if not pending:
+                    break
+                # Only this loop touches SQLite. Network calls run independently.
+                done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    item = items[pending.pop(task)]
+                    try:
+                        item.update(task.result(), status='success')
+                    except (ValueError, TimeoutError) as exc:
+                        item.update(status='failed', error=str(exc) if isinstance(exc, ValueError) else '模型请求超时')
+                        if isinstance(exc, AIRequestError) and exc.fatal:
+                            row.error = str(exc)
+                            fatal_error = True
+                    row.items_json = dumps(items)
+                    db.commit()
             for item in items:
                 if item['status'] in {'queued', 'running'}:
                     item.update(status='failed', error='因前面的连接或配置错误而停止，未发送此条资料')
@@ -395,6 +413,10 @@ async def execute_run(run_id: str, config: AIConfig, key: str, session_factory=N
                 if item['status'] in {'queued', 'running'}:
                     item.update(status='failed', error='任务异常中断，未完成')
         finally:
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
             row.items_json = dumps(items)
             row.finished_at = datetime.now(timezone.utc)
             db.commit()

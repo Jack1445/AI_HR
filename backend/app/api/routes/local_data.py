@@ -8,7 +8,7 @@ from app.adapters.boss_cli import BossCliCancelledError, BossCliCommandNotFoundE
 from app.db.models import CandidateRecord, JobCandidateRecord, MessageTemplateRecord, TimelineEventRecord
 from app.db.session import get_db
 from app.parsers.boss_cli_output import BossCliOutputError
-from app.schemas.local import CandidateDetail, CandidateUpdate, FunnelResponse, LocalCandidateListResponse, LocalJobListResponse, NoteCreate, SyncResponse, TagUpdate, TemplateCreate, TimelineEvent
+from app.schemas.local import CandidateDetail, CandidateUpdate, FunnelResponse, LocalCandidateListResponse, LocalJobListResponse, NoteCreate, SyncResponse, TagUpdate, TemplateCreate, TemplateUpdate, TimelineEvent
 from app.services.boss_readonly import BossReadOnlyService, get_boss_cli_adapter
 from app.services.local_store import LocalStoreService
 from app.services.operation_lock import manual_read_lock
@@ -153,3 +153,25 @@ def create_template(payload: TemplateCreate, db: Session = Depends(get_db)) -> d
 def list_templates(db: Session = Depends(get_db)) -> list[dict[str, str]]:
     rows = db.scalars(select(MessageTemplateRecord).order_by(MessageTemplateRecord.updated_at.desc())).all()
     return [{"id": row.id, "name": row.name, "content": row.content} for row in rows]
+
+
+@router.put('/templates/{template_id}', response_model=dict[str, str])
+def update_template(template_id: str, payload: TemplateUpdate, db: Session = Depends(get_db)) -> dict[str, str]:
+    row = db.get(MessageTemplateRecord, template_id)
+    if row is None:
+        raise HTTPException(404, '话术模板不存在')
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(400, '话术内容不能为空')
+    row.content = content
+    db.commit()
+    return {'id': row.id, 'name': row.name, 'content': row.content}
+
+
+@router.delete('/templates/{template_id}', status_code=204)
+def delete_template(template_id: str, db: Session = Depends(get_db)) -> None:
+    row = db.get(MessageTemplateRecord, template_id)
+    if row is None:
+        raise HTTPException(404, '话术模板不存在')
+    db.delete(row)
+    db.commit()
