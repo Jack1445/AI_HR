@@ -22,6 +22,10 @@ class BossCliTimeoutError(BossCliExecutionError):
     """The configured command exceeded its timeout."""
 
 
+class BossCliCancelledError(BossCliExecutionError):
+    """The active command was stopped by the user."""
+
+
 def cli_error_detail(stderr: str, stdout: str) -> str:
     """Timing events belong in diagnostics, never in the user's error banner."""
     lines = [line for line in stderr.splitlines() if not line.startswith('[boss-cli][timing] ') and not line.startswith('[boss-cli][debug] ')]
@@ -56,6 +60,8 @@ class BossCliAdapter:
         self._lock = asyncio.Lock()
         self._active_command: dict | None = None
         self._active_started_at = 0.0
+        self._active_process: asyncio.subprocess.Process | None = None
+        self._cancel_requested = False
 
     @property
     def active_command(self) -> dict | None:
@@ -68,10 +74,26 @@ class BossCliAdapter:
         async with self._lock:
             self._active_started_at = time.monotonic()
             self._active_command = {"command_id": command_id, "command": command, "diagnostic_log": str(log.path) if log else None}
+            self._cancel_requested = False
             try:
                 yield
             finally:
+                self._active_process = None
+                self._cancel_requested = False
                 self._active_command = None
+
+    async def cancel_active(self) -> bool:
+        """Stop the currently running CLI command, if one exists."""
+        if self._active_command is None:
+            return False
+        self._cancel_requested = True
+        process = self._active_process
+        if process is not None and process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        return True
 
     @property
     def invocation(self) -> tuple[str, ...]:
@@ -143,6 +165,7 @@ class BossCliAdapter:
                     f"无法启动 boss-cli：找不到可执行文件“{self.command}”"
                 ) from exc
             trace("cli.spawned", {"child_pid": process.pid, "elapsed_seconds": time.monotonic() - started_at})
+            self._active_process = process
             stdout_buffer = bytearray()
             stderr_buffer = bytearray()
             cleanup_finished_at: float | None = None
@@ -199,6 +222,11 @@ class BossCliAdapter:
                     collection.cancel()
                     await asyncio.gather(collection, return_exceptions=True)
 
+            if self._cancel_requested:
+                await stop_process()
+                trace("cli.cancelled", {"reason": "user_requested"})
+                raise BossCliCancelledError("BOSS 任务已由用户停止")
+
             try:
                 await asyncio.wait_for(asyncio.shield(collection), timeout=command_timeout)
             except asyncio.TimeoutError as exc:
@@ -221,6 +249,10 @@ class BossCliAdapter:
                 trace("cli.cancelled")
                 await stop_process()
                 raise
+
+            if self._cancel_requested:
+                trace("cli.cancelled", {"reason": "user_requested"})
+                raise BossCliCancelledError("BOSS 任务已由用户停止")
 
             result = BossCliResult(
                 args=tuple(args),

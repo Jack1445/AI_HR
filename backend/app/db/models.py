@@ -74,6 +74,12 @@ class RecommendedCandidateRecord(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class RecommendationHiddenRecord(Base):
+    __tablename__ = 'recommendation_hidden'
+    candidate_id: Mapped[str] = mapped_column(ForeignKey('recommended_candidates.id'), primary_key=True)
+    hidden_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
 class RecommendationRecycleRecord(Base):
     """Minimal compound identity retained to exclude deleted recommendations."""
     __tablename__ = 'recommendation_recycle_bin'
@@ -252,6 +258,18 @@ class ResumeDocumentRecord(Base):
     structured_json: Mapped[str] = mapped_column(Text, default="{}")
     parser_version: Mapped[str] = mapped_column(String(64), default="text-v1")
     status: Mapped[str] = mapped_column(String(32), default="parsed")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class CommunicationAttachmentRecord(Base):
+    __tablename__ = 'communication_attachments'
+    __table_args__ = (UniqueConstraint('candidate_id', 'job_id', name='uq_communication_attachment_candidate_job'),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    candidate_id: Mapped[str] = mapped_column(ForeignKey('candidates.id'), index=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey('jobs.id'), index=True)
+    resume_id: Mapped[str] = mapped_column(ForeignKey('resume_documents.id'))
+    export_path: Mapped[str] = mapped_column(String(512))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 

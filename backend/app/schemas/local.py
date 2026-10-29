@@ -53,6 +53,7 @@ class LocalCandidate(BaseModel):
     communication_checked_at: datetime | None = None
     communication_evidence: CommunicationEvidence | None = None
     communication_error: str = ''
+    resume_consent: str = 'none'
     communication_stale: bool = False
     updated_at: datetime
 

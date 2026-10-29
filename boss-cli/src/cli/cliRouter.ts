@@ -26,6 +26,7 @@ import {
 } from '../toolset/index.js';
 import { printBossInteractiveBanner } from './banner.js';
 import { runClassifyCommunications } from '../toolset/communication.js';
+import { runDownloadAttachment } from '../toolset/download-attachment.js';
 import { runGetChatHistory, runInspectChatScroll, runInspectChatIdentities } from '../toolset/list.js';
 import { validateSince } from '../toolset/chat-history.js';
 import { runRecommendJobs } from '../toolset/recommend.js';
@@ -174,7 +175,8 @@ function printHelp(): void {
       只读取推荐页岗位下拉选项，不读取候选人
   boss recommend [岗位关键字] [--job-label <完整岗位标签>] [--limit 50] [--json] [--exclude-file <查重JSON文件>]
       最多 50 人（默认 10）；--exclude-file 按姓名与基本信息跳过旧人，限量滚动找新人；不打招呼；--json 输出结构化快照
-  boss classify --targets <JSON数组>
+  boss classify --targets <JSON数组> [--accept-incoming-resumes]
+  boss download-attachment --target <JSON对象> --output <绝对PDF路径>
       每批核验最多 10 个会话，保留历史列表并滚动定位目标，读取双方消息与求简历状态；会打开会话，可能标记已读，不发送消息
   boss recommend-resume --geek-id <ID> --name <姓名> --output <绝对PNG路径> [--job-label <完整岗位标签>]
       进入推荐页，按 ID 和姓名核对后仅截图这一人的在线简历；不执行 OCR、不打招呼
@@ -602,10 +604,18 @@ export async function executeCommand(argv: string[]): Promise<string> {
 
   if (cmd === 'classify') {
     const { rest, opts, flags } = parseOpts(tail);
-    if (rest.length || flags.size || Object.keys(opts).some((key) => key !== 'targets') || !opts.targets) {
-      die('❌ 用法: classify --targets <JSON数组>，最多 10 个候选人');
+    if (rest.length || [...flags].some(key => key !== 'accept-incoming-resumes') || Object.keys(opts).some((key) => key !== 'targets') || !opts.targets) {
+      die('❌ 用法: classify --targets <JSON数组> [--accept-incoming-resumes]，最多 10 个候选人');
     }
-    return runClassifyCommunications(JSON.parse(opts.targets));
+    return runClassifyCommunications(JSON.parse(opts.targets), flags.has('accept-incoming-resumes'));
+  }
+
+  if (cmd === 'download-attachment') {
+    const { rest, opts, flags } = parseOpts(tail);
+    if (rest.length || flags.size || Object.keys(opts).some(key => !['target', 'output'].includes(key)) || !opts.target || !opts.output) {
+      die('❌ 用法: download-attachment --target <JSON对象> --output <绝对PDF路径>');
+    }
+    return runDownloadAttachment(JSON.parse(opts.target), opts.output);
   }
 
   if (cmd === 'greet') {

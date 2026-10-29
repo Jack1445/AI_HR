@@ -5,22 +5,25 @@ import re
 import uuid
 import hashlib
 import tempfile
+from shutil import copyfile
 from threading import RLock
 
 from app.adapters.boss_cli import BossCliAdapter
 from app.core.json_utils import dumps, loads
-from app.db.models import CandidateRecord, RecommendationSnapshotRecord, RecommendedResumeRecord, RecommendedCandidateRecord, RecommendationRecycleRecord
+from app.db.models import CandidateRecord, CommunicationAttachmentRecord, JobRecord, ResumeDocumentRecord, RecommendationSnapshotRecord, RecommendedResumeRecord, RecommendedCandidateRecord, RecommendationRecycleRecord, CommunicationRecycleRecord, JobCandidateRecord
 from app.core.config import get_settings
 from app.core.greeting_identity import identity as greeting_identity
 from app.db.models import RecommendationGreetingLedgerRecord
 from app.parsers.boss_cli_output import BossCliOutputError
 from app.schemas.discovery import CommunicationSnapshot, RecommendationSnapshot, OnlineResumeScreenshot, ResumeCaptureResult, RecommendedPerson, RecommendationLibrary, RecommendationReadResult, RecommendationRecycleBin, RecycledRecommendation
-from app.schemas.local import LocalCandidateListResponse
+from app.schemas.local import LocalCandidateListResponse, ResumeResponse
 from app.services.local_store import LocalStoreService
-from app.db.models import RecommendationFirstCaptureRecord
+from app.services.resumes import ResumeService
+from app.db.models import RecommendationFirstCaptureRecord, RecommendationHiddenRecord
 from app.services.table_store import cleanup_table_row
 from app.db.models import RecommendationJobRecord, RecommendationRecycleJobRecord
 from app.schemas.discovery import RecommendationJobsSnapshot, RECOMMENDATION_READ_LIMIT
+from app.services.recommendation_scope import build_active_recommendation_index, recommendation_identity_for_chat, normalize, recommendation_job_title, unambiguous_stored_chat_keys
 
 _library_upgrade_lock = RLock()
 
@@ -56,9 +59,11 @@ class DiscoveryService:
     def jobs(self) -> dict:
         self._prepare_library()
         counts = {}
+        hidden_ids = set(self.db.scalars(select(RecommendationHiddenRecord.candidate_id)))
         for row in self.db.scalars(select(RecommendedCandidateRecord)):
             job = self.remember_job(row.source_job)
-            counts[job.id] = counts.get(job.id, 0) + 1
+            if row.id not in hidden_ids:
+                counts[job.id] = counts.get(job.id, 0) + 1
         # Migrate the old single snapshot only to its explicitly recorded job.
         legacy = self.db.get(RecommendationSnapshotRecord, 'latest')
         if legacy:
@@ -147,10 +152,29 @@ class DiscoveryService:
 
     def recycle_bin(self, job_key: str | None = None) -> RecommendationRecycleBin:
         self._prepare_library()
-        return RecommendationRecycleBin(candidates=[RecycledRecommendation(id=row.identity_key, name=row.name, baseInfo=row.base_info, job_key=key, scope_label='当前岗位' if key else '历史全局排除') for row, key in self._recycled_for_job(job_key)])
+        jobs = self.db.scalars(select(RecommendationJobRecord)).all()
+        jobs_by_id = {job.id: job.label for job in jobs}
+        entries = [RecycledRecommendation(id=row.identity_key, name=row.name, baseInfo=row.base_info, job_key=key, scope_label=('当前岗位' if job_key else jobs_by_id.get(key, '来源岗位未知')) if key else '历史全局排除') for row, key in self._recycled_for_job(job_key)]
+        # Legacy communication tombstones are folded into the same view. New
+        # deletions use recommendation identities and do not create these rows.
+        jobs_by_title = {recommendation_job_title(job.label): job for job in jobs}
+        for row in self.db.scalars(select(CommunicationRecycleRecord).order_by(CommunicationRecycleRecord.name)).all():
+            matched_job = jobs_by_title.get(normalize(row.source_job))
+            if job_key and (matched_job is None or matched_job.id != job_key):
+                continue
+            entries.append(RecycledRecommendation(id=f'communication:{row.remote_id}', name=row.name, baseInfo='', job_key=matched_job.id if matched_job else '', scope_label=row.source_job or '历史沟通记录'))
+        return RecommendationRecycleBin(candidates=entries)
 
     def allow_recommendation_again(self, identity_key: str) -> None:
         self._prepare_library()
+        if identity_key.startswith('communication:'):
+            remote_id = identity_key.removeprefix('communication:')
+            row = self.db.get(CommunicationRecycleRecord, remote_id)
+            if row is None:
+                raise LookupError('回收站记录不存在或已允许重新读取，请刷新回收站')
+            self.db.delete(row)
+            self.db.commit()
+            return
         row = self.db.get(RecommendationRecycleRecord, identity_key)
         if row is None:
             raise LookupError('回收站记录不存在或已允许重新读取，请刷新回收站')
@@ -160,7 +184,10 @@ class DiscoveryService:
         self.db.execute(delete(RecommendationRecycleJobRecord).where(RecommendationRecycleJobRecord.identity_key == identity_key))
         self.db.commit()
 
-    def _recycle(self, row: RecommendedCandidateRecord) -> None:
+    def _recycle(self, row: RecommendedCandidateRecord, *, commit: bool = True) -> None:
+        hidden = self.db.get(RecommendationHiddenRecord, row.id)
+        if hidden is not None:
+            self.db.delete(hidden)
         person = RecommendedPerson.model_validate_json(row.person_json)
         job = self.remember_job(row.source_job) if row.source_job else None
         if self.db.get(RecommendationRecycleRecord, row.identity_key) is None:
@@ -187,8 +214,53 @@ class DiscoveryService:
             cache.snapshot_json = snapshot.model_dump_json()
         cleanup_table_row(self.db, 'recommendations', row.id)
         self.db.execute(delete(RecommendationFirstCaptureRecord).where(RecommendationFirstCaptureRecord.candidate_id == row.id))
+        # The same recycle entry also excludes an already imported chat row.
+        # Keep its local notes untouched, but require a new explicit sync before
+        # the communication relation may become active again after restoration.
+        index = build_active_recommendation_index(self.db)
+        unique_chat_keys = unambiguous_stored_chat_keys(self.db)
+        linked_chats = self.db.execute(
+            select(JobCandidateRecord, CandidateRecord.name)
+            .join(CandidateRecord, CandidateRecord.id == JobCandidateRecord.candidate_id)
+        ).all()
+        for relation, candidate_name in linked_chats:
+            source = loads(relation.source_snapshot, {})
+            identity = source.get('recommendation_identity')
+            legacy_match = identity is None and (normalize(candidate_name), normalize(relation.remote_job_text)) in unique_chat_keys and recommendation_identity_for_chat(index, candidate_name, relation.remote_job_text) == row.identity_key
+            if identity == row.identity_key or legacy_match:
+                source['excluded_by_recommendation'] = True
+                relation.source_snapshot = dumps(source)
         self.db.delete(row)
-        self.db.commit()
+        if commit:
+            self.db.commit()
+
+    def recycle_linked_recommendations(self, candidate_id: str) -> bool:
+        """Move recommendation records linked to one communication candidate.
+
+        Communication deletion uses the recommendation recycle record as the
+        shared tombstone. Historical relations are resolved conservatively by
+        name and source job when they predate explicit linking.
+        """
+        links = self.db.scalars(select(JobCandidateRecord).where(JobCandidateRecord.candidate_id == candidate_id)).all()
+        candidate = self.db.get(CandidateRecord, candidate_id)
+        index = build_active_recommendation_index(self.db)
+        unique_chat_keys = unambiguous_stored_chat_keys(self.db)
+        identities = set()
+        for link in links:
+            identity = loads(link.source_snapshot, {}).get('recommendation_identity')
+            if identity is None and candidate is not None and (normalize(candidate.name), normalize(link.remote_job_text)) in unique_chat_keys:
+                identity = recommendation_identity_for_chat(index, candidate.name, link.remote_job_text)
+            if identity:
+                identities.add(identity)
+        recycled = False
+        for identity_key in identities:
+            row = self.db.scalar(select(RecommendedCandidateRecord).where(RecommendedCandidateRecord.identity_key == identity_key))
+            if row is not None:
+                self._recycle(row, commit=False)
+                recycled = True
+        if recycled:
+            self.db.flush()
+        return recycled
 
     def recommendations(self, job_key: str | None = None) -> RecommendationLibrary:
         self._prepare_library()
@@ -203,8 +275,9 @@ class DiscoveryService:
             result.job_key = job.id
             result.job_label = job.label
         rows = self.db.scalars(select(RecommendedCandidateRecord).where(RecommendedCandidateRecord.deleted_at.is_(None)).order_by(RecommendedCandidateRecord.created_at.desc(), RecommendedCandidateRecord.id)).all()
+        hidden_ids = set(self.db.scalars(select(RecommendationHiddenRecord.candidate_id)))
         for row in rows:
-            if job and self.job_key(row.source_job) != job.id:
+            if row.id in hidden_ids or job and self.job_key(row.source_job) != job.id:
                 continue
             person = RecommendedPerson.model_validate_json(row.person_json)
             person.id = row.id
@@ -222,7 +295,16 @@ class DiscoveryService:
         row = self.db.get(RecommendedCandidateRecord, candidate_id)
         if row is None:
             raise LookupError('推荐人选不存在或已删除')
-        self._recycle(row)
+        if self.db.get(RecommendationHiddenRecord, row.id) is not None:
+            raise LookupError('推荐人选已从当前页面隐藏')
+        person = RecommendedPerson.model_validate_json(row.person_json)
+        greeting = self.db.get(RecommendationGreetingLedgerRecord,
+            greeting_identity(self.job_key(row.source_job), person.geekId)) if person.geekId else None
+        if greeting is not None and greeting.status == 'sent':
+            self.db.add(RecommendationHiddenRecord(candidate_id=row.id))
+            self.db.commit()
+        else:
+            self._recycle(row)
 
     @staticmethod
     def _resume_view(row: RecommendedResumeRecord) -> OnlineResumeScreenshot:
@@ -336,12 +418,17 @@ class DiscoveryService:
         self.db.commit()
         return RecommendationReadResult(**self.recommendations(job.id).model_dump(), added_ids=added)
 
-    async def classify(self, ids: list[str]) -> LocalCandidateListResponse:
+    async def classify(self, ids: list[str], *, accept_incoming_resumes: bool = False) -> LocalCandidateListResponse:
         if not 1 <= len(ids) <= 10 or len(set(ids)) != len(ids):
             raise ValueError('每次仅可核验 1 到 10 位不同候选人')
         rows = [self.db.get(CandidateRecord, candidate_id) for candidate_id in ids]
         if any(row is None for row in rows):
             raise LookupError('所选候选人不存在，请刷新列表')
+        local = LocalStoreService(self.db)
+        eligible = build_active_recommendation_index(self.db, greeted_only=True)
+        unique_chats = unambiguous_stored_chat_keys(self.db)
+        if any(not local._candidate_in_recommendations(row.id, index=eligible, unique_chat_keys=unique_chats) for row in rows):
+            raise ValueError('核验名单中有人不在已打招呼的推荐牛人范围内，请重新同步')
         targets = []
         for row in rows:
             source = loads(row.source_snapshot, {})
@@ -350,7 +437,12 @@ class DiscoveryService:
             if not source.get('source_id'):
                 raise ValueError('候选人缺少 BOSS 会话编号，请先同步后核验；旧的同名记录需要人工确认')
             targets.append({'id': row.id, 'sourceId': source['source_id'], 'name': row.name, 'job': source['job']})
-        result = await self.adapter.run('classify', '--targets', dumps(targets))
+        if accept_incoming_resumes and get_settings().automation_emergency_stop:
+            raise ValueError('紧急停止已开启，未执行附件简历同意操作')
+        args = ['classify', '--targets', dumps(targets)]
+        if accept_incoming_resumes:
+            args.append('--accept-incoming-resumes')
+        result = await self.adapter.run(*args)
         try:
             snapshot = CommunicationSnapshot.model_validate_json(result.stdout)
         except ValueError as error:
@@ -367,3 +459,67 @@ class DiscoveryService:
         self.db.commit()
         local = LocalStoreService(self.db)
         return LocalCandidateListResponse(candidates=[local._candidate_view(row) for row in rows], total=len(rows))
+
+    async def download_attachment(self, candidate_id: str, job_id: str) -> tuple[ResumeResponse, bool, str]:
+        row = self.db.get(CandidateRecord, candidate_id)
+        if row is None:
+            raise LookupError('所选沟通候选人不存在，请刷新列表')
+        job = self.db.get(JobRecord, job_id)
+        if job is None:
+            raise LookupError('所选岗位不存在，请刷新列表')
+        local = LocalStoreService(self.db)
+        if not local._candidate_in_recommendations(candidate_id, job_id=job_id,
+                index=build_active_recommendation_index(self.db, greeted_only=True),
+                unique_chat_keys=unambiguous_stored_chat_keys(self.db)):
+            raise ValueError('该候选人不属于当前岗位已保留、已打招呼的推荐牛人')
+        if local._candidate_view(row).communication_status != 'mutual':
+            raise ValueError('仅可下载双方已沟通候选人的附件简历，请先同步核验')
+        resumes = ResumeService(self.db, get_settings())
+        export_root = (Path(get_settings().data_dir).resolve() / 'downloaded-resumes').resolve()
+        saved = self.db.scalar(select(CommunicationAttachmentRecord).where(
+            CommunicationAttachmentRecord.candidate_id == candidate_id,
+            CommunicationAttachmentRecord.job_id == job_id))
+        if saved:
+            export_path = (export_root / saved.export_path).resolve()
+            if not export_path.is_relative_to(export_root):
+                raise ValueError('已保存附件的路径无效，未重新下载')
+            document = self.db.get(ResumeDocumentRecord, saved.resume_id)
+            if document and export_path.is_file() and resumes.path(document.id).is_file():
+                return resumes.get(document.id), True, str(export_path.parent)
+            self.db.delete(saved)
+            self.db.commit()
+        source = loads(row.source_snapshot, {})
+        if not source.get('source_id') or not source.get('job'):
+            raise ValueError('候选人缺少准确的 BOSS 会话编号或来源岗位，请先同步')
+        target = {'id': candidate_id, 'sourceId': source['source_id'], 'name': row.name, 'job': source['job']}
+        root = Path(get_settings().data_dir).resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='attachment-', dir=root) as folder:
+            path = Path(folder) / 'attachment.pdf'
+            result = await self.adapter.run('download-attachment', '--target', dumps(target), '--output', str(path))
+            try:
+                receipt = loads(result.stdout, {})
+                if receipt.get('version') != 1 or receipt.get('id') != candidate_id or receipt.get('source_id') != source['source_id'] or receipt.get('name') != row.name or receipt.get('job') != source['job']:
+                    raise ValueError('附件下载回执的候选人身份不匹配')
+                data = path.read_bytes()
+                if len(data) != receipt.get('size') or not data.startswith(b'%PDF-'):
+                    raise ValueError('附件文件与下载回执不一致')
+            except (OSError, ValueError, TypeError) as error:
+                raise BossCliOutputError(f'附件下载结果无效：{error}') from error
+            resume = resumes.import_file(candidate_id, receipt['original_name'], 'application/pdf', data)
+            safe_job = re.sub(r'[\\/:*?"<>|]', '_', job.title).strip(' .')[:80] or '未命名岗位'
+            safe_name = re.sub(r'[\\/:*?"<>|]', '_', row.name).strip(' .')[:50] or candidate_id[:8]
+            safe_file = re.sub(r'[\\/:*?"<>|]', '_', resume.original_name).strip(' .')[:100]
+            relative = Path(f'{safe_job}-{job_id[:8]}') / f'{safe_name}-{resume.id[:8]}-{safe_file}'
+            export_path = export_root / relative
+            export_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = export_path.with_name(export_path.name + f'.{uuid.uuid4().hex}.tmp')
+            try:
+                copyfile(resumes.path(resume.id), temporary)
+                temporary.replace(export_path)
+                self.db.add(CommunicationAttachmentRecord(candidate_id=candidate_id, job_id=job_id,
+                    resume_id=resume.id, export_path=str(relative)))
+                self.db.commit()
+            finally:
+                temporary.unlink(missing_ok=True)
+            return resume, False, str(export_path.parent)

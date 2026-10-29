@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Alert, Button, Checkbox, Drawer, Input, InputNumber, Modal, Select, Space, Tabs, Tag } from 'antd';
 import { DeleteOutlined, HolderOutlined, PlusOutlined } from '@ant-design/icons';
-import { fieldTypes, filterLabels, moveRow, type CustomField, type FieldType, type TableConfig, type TableState } from '../tableModel';
+import { fieldTypes, filterCount, filterLabels, moveRow, type CustomField, type FieldType, type FilterGroup, type FilterRule, type TableConfig, type TableState } from '../tableModel';
 
 export interface FieldInfo { id: string; name: string; type: FieldType; editable?: boolean; options?: string[] }
 interface Props { initial: TableConfig; state: TableState; fields: FieldInfo[]; tab: string; busy: boolean; error?: string; onSave: (config: TableConfig) => Promise<void>; onClose: () => void }
@@ -17,12 +17,16 @@ export function TableSettings({ initial, state, fields: baseFields, tab, busy, e
   const view = config.views.find(v => v.id === config.active_view)!;
   const fields = [...baseFields, ...config.fields.map(f => ({ ...f, editable: true }))];
   const options = fields.map(f => ({ value: f.id, label: view.columns.find(c => c.id === f.id)?.name || f.name }));
+  const filterGroups: FilterGroup[] = view.filter_groups?.length ? view.filter_groups : view.filters.length ? [{ filters: view.filters, conjunction: view.conjunction }] : [];
+  const activeFilterCount = filterCount(view);
   const changeView = (patch: Partial<typeof view>) => setConfig(c => ({ ...c, views: c.views.map(v => v.id === view.id ? { ...v, ...patch } : v) }));
+  const changeFilterGroups = (groups: FilterGroup[], conjunction = view.conjunction) => changeView({ filter_groups: groups, filters: [], conjunction });
+  const newFilter = (): FilterRule => ({ field: fields[0].id, op: 'contains', value: '' });
   const changeColumn = (id: string, patch: Partial<typeof view.columns[number]>) => changeView({ columns: view.columns.map(c => c.id === id ? { ...c, ...patch } : c) });
   const updateCustom = (id: string, patch: Partial<CustomField>) => setConfig(c => ({ ...c, fields: c.fields.map(f => f.id === id ? { ...f, ...patch } : f) }));
   const removeField = (id: string) => {
     const count = Object.values(state.values).filter(v => v[id] != null && v[id] !== '' && (!Array.isArray(v[id]) || (v[id] as string[]).length)).length;
-    modal.confirm({ title: '删除这个自定义字段？', content: `保存设置后将清除 ${count} 条已填写的值，并从所有视图移除此字段。此操作不能撤销。`, okText: '删除字段', okButtonProps: { danger: true }, cancelText: '取消', onOk: () => setConfig(c => ({ ...c, fields: c.fields.filter(f => f.id !== id), views: c.views.map(v => ({ ...v, columns: v.columns.filter(col => col.id !== id), filters: v.filters.filter(f => f.field !== id), sorts: v.sorts.filter(s => s.field !== id), group: v.group === id ? '' : v.group })) })) });
+    modal.confirm({ title: '删除这个自定义字段？', content: `保存设置后将清除 ${count} 条已填写的值，并从所有视图移除此字段。此操作不能撤销。`, okText: '删除字段', okButtonProps: { danger: true }, cancelText: '取消', onOk: () => setConfig(c => ({ ...c, fields: c.fields.filter(f => f.id !== id), views: c.views.map(v => ({ ...v, columns: v.columns.filter(col => col.id !== id), filters: v.filters.filter(f => f.field !== id), filter_groups: (v.filter_groups ?? []).map(g => ({ ...g, filters: g.filters.filter(f => f.field !== id) })).filter(g => g.filters.length), sorts: v.sorts.filter(s => s.field !== id), group: v.group === id ? '' : v.group })) })) });
   };
   const addField = () => {
     const name = newName.trim();
@@ -54,9 +58,19 @@ export function TableSettings({ initial, state, fields: baseFields, tab, busy, e
       {['select', 'multi'].includes(newType) && <Select aria-label="新字段选项" mode="tags" value={newOptions} onChange={values => setNewOptions([...new Set(values.map(v => v.trim()).filter(Boolean))])} placeholder="输入选项后回车，如：重点关注" tokenSeparators={[',', '，']} />}
       {validation && <Alert type="warning" message={validation} />}<Button icon={<PlusOutlined />} onClick={addField} disabled={config.fields.length >= 100}>添加字段</Button></div>
   </>;
-  const filterPanel = <><p className="table-help">筛选只改变当前视图，不删除记录；应用于全部本地数据。</p><Select aria-label="筛选组合方式" value={view.conjunction} options={[{ value: 'and', label: '满足以下所有条件（且）' }, { value: 'or', label: '满足以下任意条件（或）' }]} onChange={conjunction => changeView({ conjunction })} style={{ width: 260 }} />
-    {view.filters.map((rule, i) => <div className="table-rule" key={i}><Select aria-label={`筛选字段${i + 1}`} value={rule.field} options={options} onChange={field => changeView({ filters: view.filters.map((r, j) => i === j ? { ...r, field } : r) })} /><Select aria-label={`筛选条件${i + 1}`} value={rule.op} options={Object.entries(filterLabels).map(([value, label]) => ({ value, label }))} onChange={op => changeView({ filters: view.filters.map((r, j) => i === j ? { ...r, op } : r) })} /><Input aria-label={`筛选值${i + 1}`} placeholder="日期填 YYYY-MM-DD，复选框填 是 / 否" value={rule.value} disabled={['empty', 'not_empty'].includes(rule.op)} onChange={e => changeView({ filters: view.filters.map((r, j) => i === j ? { ...r, value: e.target.value } : r) })} /><Button aria-label={`删除筛选${i + 1}`} type="text" icon={<DeleteOutlined />} onClick={() => changeView({ filters: view.filters.filter((_, j) => j !== i) })} /></div>)}
-    <Space><Button icon={<PlusOutlined />} onClick={() => changeView({ filters: [...view.filters, { field: fields[0].id, op: 'contains', value: '' }] })} disabled={view.filters.length >= 30}>添加条件</Button><Button type="text" onClick={() => changeView({ filters: [] })}>清空筛选</Button></Space></>;
+  const filterPanel = <>
+    <p className="table-help">把“985 或 211”放进第一个条件组，把“27年应届 或 28年应届”放进第二个条件组，再选择组间“且”。筛选只改变当前视图。</p>
+    {filterGroups.length > 1 && <div className="filter-groups-join"><span>条件组之间</span><Select aria-label="条件组组合方式" value={view.filter_groups?.length ? view.conjunction : 'and'} options={[{ value: 'and', label: '同时满足（且）' }, { value: 'or', label: '满足任一组（或）' }]} onChange={conjunction => changeFilterGroups(filterGroups, conjunction)} /></div>}
+    {filterGroups.map((group, groupIndex) => <div className="filter-condition-group" key={groupIndex}>
+      <div className="filter-condition-group-head"><strong>条件组 {groupIndex + 1}</strong><Space size={8}><span>组内</span><Select aria-label={`条件组${groupIndex + 1}组合方式`} value={group.conjunction} options={[{ value: 'or', label: '满足任一（或）' }, { value: 'and', label: '全部满足（且）' }]} onChange={conjunction => changeFilterGroups(filterGroups.map((g, i) => i === groupIndex ? { ...g, conjunction } : g), view.filter_groups?.length ? view.conjunction : 'and')} /><Button aria-label={`删除条件组${groupIndex + 1}`} type="text" icon={<DeleteOutlined />} onClick={() => changeFilterGroups(filterGroups.filter((_, i) => i !== groupIndex), 'and')} /></Space></div>
+      {group.filters.map((rule, ruleIndex) => {
+        const replace = (patch: Partial<FilterRule>) => changeFilterGroups(filterGroups.map((g, i) => i === groupIndex ? { ...g, filters: g.filters.map((r, j) => j === ruleIndex ? { ...r, ...patch } : r) } : g), view.filter_groups?.length ? view.conjunction : 'and');
+        return <div className="table-rule" key={ruleIndex}><Select aria-label={`条件组${groupIndex + 1}筛选字段${ruleIndex + 1}`} value={rule.field} options={options} onChange={field => replace({ field })} /><Select aria-label={`条件组${groupIndex + 1}筛选条件${ruleIndex + 1}`} value={rule.op} options={Object.entries(filterLabels).map(([value, label]) => ({ value, label }))} onChange={op => replace({ op: op as FilterRule['op'] })} /><Input aria-label={`条件组${groupIndex + 1}筛选值${ruleIndex + 1}`} placeholder="例如 985、27年应届" value={rule.value} disabled={['empty', 'not_empty'].includes(rule.op)} onChange={e => replace({ value: e.target.value })} /><Button aria-label={`删除条件组${groupIndex + 1}筛选${ruleIndex + 1}`} type="text" icon={<DeleteOutlined />} onClick={() => changeFilterGroups(filterGroups.map((g, i) => i === groupIndex ? { ...g, filters: g.filters.filter((_, j) => j !== ruleIndex) } : g).filter(g => g.filters.length), view.filter_groups?.length ? view.conjunction : 'and')} /></div>;
+      })}
+      <Button className="filter-add-condition" size="small" icon={<PlusOutlined />} disabled={activeFilterCount >= 30} onClick={() => changeFilterGroups(filterGroups.map((g, i) => i === groupIndex ? { ...g, filters: [...g.filters, newFilter()] } : g), view.filter_groups?.length ? view.conjunction : 'and')}>添加组内条件</Button>
+    </div>)}
+    <Space><Button icon={<PlusOutlined />} disabled={activeFilterCount >= 30 || filterGroups.length >= 10} onClick={() => changeFilterGroups([...filterGroups, { filters: [newFilter()], conjunction: 'or' }], 'and')}>新增条件组</Button><Button type="text" disabled={!filterGroups.length} onClick={() => changeFilterGroups([], 'and')}>清空筛选</Button></Space>
+  </>;
   const sortPanel = <><p className="table-help">从上到下按优先级排序。清空排序并取消分组后，可拖动行或置顶、置底。</p>{view.sorts.map((rule, i) => <div className="table-rule sort-rule" key={i}><span>{i + 1}</span><Select aria-label={`排序字段${i + 1}`} value={rule.field} options={options} onChange={field => changeView({ sorts: view.sorts.map((r, j) => i === j ? { ...r, field } : r) })} /><Select aria-label={`排序方向${i + 1}`} value={rule.direction} options={[{ value: 'asc', label: '升序' }, { value: 'desc', label: '降序' }]} onChange={direction => changeView({ sorts: view.sorts.map((r, j) => i === j ? { ...r, direction } : r) })} /><Button aria-label={`删除排序${i + 1}`} type="text" icon={<DeleteOutlined />} onClick={() => changeView({ sorts: view.sorts.filter((_, j) => i !== j) })} /></div>)}<Space><Button icon={<PlusOutlined />} disabled={view.sorts.length >= 10} onClick={() => changeView({ sorts: [...view.sorts, { field: fields[0].id, direction: 'asc' }] })}>添加排序</Button><Button type="text" onClick={() => changeView({ sorts: [] })}>清空排序</Button></Space></>;
   const groupPanel = <><p className="table-help">按字段分组查看；点击分组标题可收起或展开。每组显示实际记录数。</p><Select aria-label="分组字段" style={{ width: '100%' }} value={view.group} options={[{ value: '', label: '不分组' }, ...options.filter(o => o.value !== 'resume')]} onChange={group => changeView({ group, collapsed: [] })} /></>;
   return <Drawer title={`表格设置 · ${view.name}`} width={700} open onClose={busy ? undefined : onClose} maskClosable={!busy} footer={<div className="table-settings-footer"><span>设置仅影响当前视图；字段增删影响整张表</span><Space><Button disabled={busy} onClick={onClose}>取消</Button><Button type="primary" loading={busy} onClick={() => {
@@ -64,6 +78,6 @@ export function TableSettings({ initial, state, fields: baseFields, tab, busy, e
     if (config.fields.some(f => !f.name.trim())) { setValidation('字段名称不能为空'); setActiveTab('fields'); return; }
     void onSave(config);
   }}>保存设置</Button></Space></div>}>
-    {context}{error && <Alert type="error" message={error} showIcon />}<Tabs activeKey={activeTab} onChange={setActiveTab} items={[{ key: 'fields', label: '字段管理', children: fieldPanel }, { key: 'filters', label: `筛选 ${view.filters.length || ''}`, children: filterPanel }, { key: 'sorts', label: `排序 ${view.sorts.length || ''}`, children: sortPanel }, { key: 'group', label: '分组', children: groupPanel }]} />
+    {context}{error && <Alert type="error" message={error} showIcon />}<Tabs activeKey={activeTab} onChange={setActiveTab} items={[{ key: 'fields', label: '字段管理', children: fieldPanel }, { key: 'filters', label: `筛选 ${activeFilterCount || ''}`, children: filterPanel }, { key: 'sorts', label: `排序 ${view.sorts.length || ''}`, children: sortPanel }, { key: 'group', label: '分组', children: groupPanel }]} />
   </Drawer>;
 }

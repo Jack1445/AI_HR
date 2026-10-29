@@ -3,11 +3,12 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
+from collections import Counter
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -26,6 +27,7 @@ from app.db.models import (
     TimelineEventRecord,
     CommunicationRecycleRecord,
 )
+from app.services.recommendation_scope import build_active_recommendation_index, recommendation_identity_for_chat, normalize, unambiguous_stored_chat_keys
 from app.schemas.local import (
     CandidateDetail,
     CandidateUpdate,
@@ -39,6 +41,7 @@ from app.schemas.local import (
 )
 from app.services.boss_readonly import BossReadOnlyService
 from app.services.diagnostics import DiagnosticLog
+from app.schemas.recruiting import CandidateListResponse
 
 
 STAGES = ("new", "contacted", "communicating", "interview_pending", "interviewing", "decision", "offer", "hired", "rejected", "archived")
@@ -86,12 +89,37 @@ class LocalStoreService:
             if diagnostic_log is not None:
                 diagnostic_log.write("sync.jobs_loaded", {"count": len(remote_jobs.jobs), "remote_total": remote_jobs.remote_total, "elapsed_seconds": time.monotonic() - phase_start})
             candidates_by_job = {}
+            recommendation_index = build_active_recommendation_index(self.db, greeted_only=True)
             if scope != "jobs":
                 phase_start = time.monotonic()
                 diagnostic_log.write("sync.candidates_start")
-                candidates_by_job = await self.boss.list_candidates_for_jobs(
-                    remote_jobs.jobs, debug=diagnostic, diagnostic_log=diagnostic_log, history=True, since=since
+                if recommendation_index:
+                    candidates_by_job = await self.boss.list_candidates_for_jobs(
+                        remote_jobs.jobs, debug=diagnostic, diagnostic_log=diagnostic_log, history=True, since=since
+                    )
+                else:
+                    # No confirmed greetings means there are no relevant chats
+                    # to look for. Avoid traversing BOSS history at all.
+                    candidates_by_job = {
+                        remote.id: CandidateListResponse(job_id=remote.id, job_title=remote.title, candidates=[])
+                        for remote in remote_jobs.jobs
+                    }
+                    self.boss.history_summary = {"scanned": 0, "in_range": 0, "stop_reason": "no_greeted_recommendations"}
+                chat_counts = Counter(
+                    (normalize(item.name), normalize(item.job))
+                    for response in candidates_by_job.values()
+                    for item in response.candidates
                 )
+                # The recommendation library is the explicit allow-list for
+                # communications.  Keep only unambiguous name + job matches;
+                # the BOSS chat list does not expose recommendation basic-info.
+                for remote in remote_jobs.jobs:
+                    response = candidates_by_job[remote.id]
+                    response.candidates = [
+                        item for item in response.candidates
+                        if recommendation_identity_for_chat(recommendation_index, item.name, item.job)
+                        and chat_counts[(normalize(item.name), normalize(item.job))] == 1
+                    ]
                 diagnostic_log.write("sync.candidates_complete", {"elapsed_seconds": time.monotonic() - phase_start})
             phase_start = time.monotonic()
             diagnostic_log.write("sync.database_start")
@@ -140,9 +168,16 @@ class LocalStoreService:
                         self.db.flush()
                         written += 1
                     candidate.name = item.name
+                    recommendation_identity = recommendation_identity_for_chat(recommendation_index, item.name, item.job)
+                    if not recommendation_identity:
+                        # This is also guarded above; keep the check next to
+                        # persistence so future callers cannot bypass scope.
+                        continue
                     if candidate.id not in verification_ids:
                         verification_ids.append(candidate.id)
-                    candidate.source_snapshot = dumps(item.model_dump())
+                    source_snapshot = item.model_dump()
+                    source_snapshot['recommendation_identity'] = recommendation_identity
+                    candidate.source_snapshot = dumps(source_snapshot)
                     relation = self.db.scalar(select(JobCandidateRecord).where(JobCandidateRecord.job_id == job.id, JobCandidateRecord.candidate_id == candidate.id))
                     if relation is None:
                         relation = JobCandidateRecord(job_id=job.id, candidate_id=candidate.id)
@@ -151,7 +186,7 @@ class LocalStoreService:
                     relation.remote_time = item.time
                     relation.last_message = item.message
                     relation.unread_count = item.unread_count
-                    relation.source_snapshot = dumps(item.model_dump())
+                    relation.source_snapshot = dumps(source_snapshot)
                     event_key = _fingerprint("remote-message", job.id, candidate.id, item.time, item.message)
                     if self.db.scalar(select(TimelineEventRecord).where(TimelineEventRecord.dedupe_key == event_key)) is None:
                         self.db.add(TimelineEventRecord(candidate_id=candidate.id, job_id=job.id, event_type="message", title="BOSS 沟通记录", content=item.message, actor="boss-cli", dedupe_key=event_key))
@@ -197,8 +232,35 @@ class LocalStoreService:
         rows = self.db.scalars(select(JobRecord).order_by(JobRecord.updated_at.desc())).all()
         return LocalJobListResponse(jobs=[LocalJob(id=r.id, remote_id=r.remote_id, title=r.title, status=r.status, label=r.label, meta=loads(r.meta_json, []), stats=loads(r.stats_json, {}), updated_at=r.updated_at) for r in rows], total=len(rows))
 
+    def _recommended_relation(self, relation: JobCandidateRecord, index: dict | None = None, unique_chat_keys: set | None = None) -> bool:
+        index = index if index is not None else build_active_recommendation_index(self.db, greeted_only=True)
+        unique_chat_keys = unique_chat_keys if unique_chat_keys is not None else unambiguous_stored_chat_keys(self.db)
+        source = loads(relation.source_snapshot, {})
+        if source.get('excluded_by_recommendation'):
+            return False
+        candidate = self.db.get(CandidateRecord, relation.candidate_id)
+        if candidate is None:
+            return False
+        if (normalize(candidate.name), normalize(relation.remote_job_text)) not in unique_chat_keys:
+            return False
+        active_identity = recommendation_identity_for_chat(index, candidate.name, relation.remote_job_text)
+        if active_identity is None:
+            return False
+        identity = source.get('recommendation_identity')
+        # Records saved before recommendation linking have no identity field.
+        # Match them only when name and source job identify one active person.
+        return identity is None or identity == active_identity
+
+    def _candidate_in_recommendations(self, candidate_id: str, job_id: str | None = None, index: dict | None = None, unique_chat_keys: set | None = None) -> bool:
+        stmt = select(JobCandidateRecord).where(JobCandidateRecord.candidate_id == candidate_id)
+        if job_id:
+            stmt = stmt.where(JobCandidateRecord.job_id == job_id)
+        index = index if index is not None else build_active_recommendation_index(self.db, greeted_only=True)
+        unique_chat_keys = unique_chat_keys if unique_chat_keys is not None else unambiguous_stored_chat_keys(self.db)
+        return any(self._recommended_relation(relation, index, unique_chat_keys) for relation in self.db.scalars(stmt).all())
+
     def list_candidates(self, job_id: str | None = None, stage: str | None = None, tag: str | None = None, q: str | None = None, favorite: bool | None = None, limit: int = 100, offset: int = 0) -> LocalCandidateListResponse:
-        stmt = select(CandidateRecord).order_by(CandidateRecord.created_at.desc(), CandidateRecord.id).offset(offset).limit(min(limit, 500))
+        stmt = select(CandidateRecord).order_by(CandidateRecord.created_at.desc(), CandidateRecord.id)
         if job_id:
             stmt = stmt.join(JobCandidateRecord, JobCandidateRecord.candidate_id == CandidateRecord.id).where(JobCandidateRecord.job_id == job_id)
         if stage:
@@ -210,14 +272,19 @@ class LocalStoreService:
         if q:
             needle = f"%{q.strip()}%"
             stmt = stmt.where(or_(CandidateRecord.name.ilike(needle), CandidateRecord.owner.ilike(needle)))
-        total = self.db.scalar(select(func.count()).select_from(stmt.limit(None).offset(None).order_by(None).subquery()))
-        rows = self.db.scalars(stmt).unique().all()
-        items = [self._candidate_view(row) for row in rows]
+        index = build_active_recommendation_index(self.db, greeted_only=True)
+        unique_chat_keys = unambiguous_stored_chat_keys(self.db)
+        scoped = [row for row in self.db.scalars(stmt).unique().all() if self._candidate_in_recommendations(row.id, job_id, index, unique_chat_keys)]
+        total = len(scoped)
+        rows = scoped[offset:offset + min(limit, 500)]
+        items = [self._candidate_view(row, index, unique_chat_keys) for row in rows]
         return LocalCandidateListResponse(candidates=items, total=total)
 
     def list_reminders(self, limit: int = 100) -> LocalCandidateListResponse:
-        rows = self.db.scalars(select(CandidateRecord).order_by(CandidateRecord.follow_up_at.asc(), CandidateRecord.updated_at.desc()).limit(min(limit, 500))).all()
-        items = [self._candidate_view(row) for row in rows]
+        index = build_active_recommendation_index(self.db, greeted_only=True)
+        unique_chat_keys = unambiguous_stored_chat_keys(self.db)
+        rows = [row for row in self.db.scalars(select(CandidateRecord).order_by(CandidateRecord.follow_up_at.asc(), CandidateRecord.updated_at.desc())).all() if self._candidate_in_recommendations(row.id, index=index, unique_chat_keys=unique_chat_keys)][:min(limit, 500)]
+        items = [self._candidate_view(row, index, unique_chat_keys) for row in rows]
         now = datetime.now(timezone.utc)
         def is_due(row: CandidateRecord, item: LocalCandidate) -> bool:
             follow_up = row.follow_up_at
@@ -228,8 +295,10 @@ class LocalStoreService:
         due = [item for item, row in zip(items, rows) if is_due(row, item)]
         return LocalCandidateListResponse(candidates=due, total=len(due))
 
-    def _candidate_view(self, row: CandidateRecord) -> LocalCandidate:
-        relations = self.db.scalars(select(JobCandidateRecord).where(JobCandidateRecord.candidate_id == row.id).order_by(JobCandidateRecord.updated_at.desc())).all()
+    def _candidate_view(self, row: CandidateRecord, index: dict | None = None, unique_chat_keys: set | None = None) -> LocalCandidate:
+        index = index if index is not None else build_active_recommendation_index(self.db, greeted_only=True)
+        unique_chat_keys = unique_chat_keys if unique_chat_keys is not None else unambiguous_stored_chat_keys(self.db)
+        relations = [relation for relation in self.db.scalars(select(JobCandidateRecord).where(JobCandidateRecord.candidate_id == row.id).order_by(JobCandidateRecord.updated_at.desc())).all() if self._recommended_relation(relation, index, unique_chat_keys)]
         jobs = [self.db.get(JobRecord, relation.job_id) for relation in relations]
         tags = self.db.scalars(select(TagRecord.name).join(CandidateTagRecord, CandidateTagRecord.tag_id == TagRecord.id).where(CandidateTagRecord.candidate_id == row.id)).all()
         latest = relations[0] if relations else None
@@ -246,11 +315,12 @@ class LocalStoreService:
             communication_checked_at=communication.get('checked_at'),
             communication_evidence=communication.get('evidence'),
             communication_error=identity_warning or ('消息或时间已变化，请重新核验' if stale else communication.get('error', '')),
+            resume_consent=communication.get('resume_consent', 'none'),
             communication_stale=stale)
 
     def detail(self, candidate_id: str) -> CandidateDetail:
         row = self.db.get(CandidateRecord, candidate_id)
-        if row is None:
+        if row is None or not self._candidate_in_recommendations(candidate_id):
             raise LookupError("未找到候选人")
         view = self._candidate_view(row)
         notes = self.db.scalars(select(CandidateNoteRecord).where(CandidateNoteRecord.candidate_id == candidate_id).order_by(CandidateNoteRecord.created_at.desc())).all()

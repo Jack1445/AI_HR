@@ -1,6 +1,7 @@
 import { withBossSessionPage } from '../common/boss_session_page.js';
 import { ensureChatListReady } from './list.js';
 import { ensureChatTarget } from './chat-history.js';
+import { runChatActionOnCurrentConversation } from './action.js';
 
 export type CommunicationEvidence = {
   recruiter_sent: boolean;
@@ -8,6 +9,7 @@ export type CommunicationEvidence = {
   request_resume_enabled: boolean | null;
   mutual_reply_required: boolean;
   attachment_present: boolean;
+  pending_attachment_request?: boolean;
 };
 
 // Absence of one sender in a partially loaded history is not proof of no reply.
@@ -48,7 +50,7 @@ export function openChatScript(target: Target): string {
         })()`;
 }
 
-export async function runClassifyCommunications(value: unknown): Promise<string> {
+export async function runClassifyCommunications(value: unknown, acceptIncomingResumes = false): Promise<string> {
   validateTargets(value);
   return withBossSessionPage(async (page) => {
     await ensureChatListReady(page, 'all', true);
@@ -84,19 +86,33 @@ export async function runClassifyCommunications(value: unknown): Promise<string>
           const disabled = request && button ? /disabled|forbid|ban/i.test(String(request.className) + ' ' + String(button.className)) || button.hasAttribute('disabled') || button.getAttribute('aria-disabled') === 'true' : null;
           const attachmentButtons = Array.from(document.querySelectorAll('a,button')).filter(el => visible(el) && norm(el.textContent) === '附件简历');
           const gateText = [request?.textContent ?? '', ...attachmentButtons.map(el => el.parentElement?.textContent ?? '')].join(' ');
+          const pendingAttachment = Array.from(list.querySelectorAll('.message-item .item-friend')).some(friend => {
+            if (!norm(friend.querySelector('.message-card-top-title')?.textContent).includes('附件简历')) return false;
+            return Array.from(friend.querySelectorAll('.message-card-buttons .card-btn')).some(btn => {
+              const cls = String(btn.className);
+              const style = getComputedStyle(btn);
+              return norm(btn.textContent).startsWith('同意') && !/disabled|forbid|ban/i.test(cls) && !btn.hasAttribute('disabled') && style.pointerEvents !== 'none' && Number(style.opacity) >= 0.35;
+            });
+          });
           return {
             recruiter_sent: hasMessage('.message-item .item-myself'),
             candidate_sent: hasMessage('.message-item .item-friend'),
             request_resume_enabled: disabled === null ? null : !disabled,
             mutual_reply_required: /双向回复后|双方.*(?:回复|发送).*后/.test(gateText),
-            attachment_present: !!list.querySelector('.item-friend .resume-icon')
+            attachment_present: !!list.querySelector('.item-friend .resume-icon'),
+            pending_attachment_request: pendingAttachment
           };
         })()`;
         await page.waitForFunction(snapshotScript, { timeout: 8000 });
         const evidence = await page.evaluate(snapshotScript) as CommunicationEvidence | null;
         if (!evidence) throw new Error('会话在核验过程中发生切换，请重试');
         const status = classifyEvidence(evidence);
-        results.push({ id: target.id, status, evidence, message: row.message, time: row.time, checked_at: new Date().toISOString(), error: status === 'unknown' ? '当前页面证据不足或冲突，未推断单方沟通状态' : '' });
+        let resume_consent = 'none';
+        if (acceptIncomingResumes && evidence.pending_attachment_request) {
+          const actionResult = await runChatActionOnCurrentConversation(page, { action: 'agree-resume', expectedTarget: target });
+          resume_consent = actionResult.startsWith('已点击「同意」') ? 'clicked' : 'none';
+        }
+        results.push({ id: target.id, status, evidence, resume_consent, message: row.message, time: row.time, checked_at: new Date().toISOString(), error: status === 'unknown' ? '当前页面证据不足或冲突，未推断单方沟通状态' : '' });
       } catch (error) {
         // Return an explicit per-target failure, never guess a category.
         results.push({ id: target.id, status: 'unknown', evidence: null, checked_at: new Date().toISOString(), error: error instanceof Error ? error.message : String(error) });

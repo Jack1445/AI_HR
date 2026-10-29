@@ -7,7 +7,8 @@ from app.db.models import RecommendationGreetingBatchRecord as Batch
 from app.db.session import get_db, SessionLocal
 from app.services.operation_lock import manual_read_lock
 from app.services.recommendation_greetings import (ACTIVE, GreetingRequest, create_batch,
-                                                  execute_batch, existing_request, view, recover_interrupted_greetings)
+                                                  execute_batch, existing_request, view, recover_interrupted_greetings,
+                                                  daily_greeting_count)
 
 
 def local_origin(request: Request):
@@ -24,6 +25,11 @@ router = APIRouter(prefix='/api/recommendation-greetings', tags=['manual-greetin
 def batches(db: Session = Depends(get_db)):
     # Active tasks sort first, allowing refresh/tab changes to recover the lock and progress.
     return [view(row) for row in db.scalars(select(Batch).order_by(Batch.status.in_(ACTIVE).desc(), Batch.created_at.desc()).limit(20))]
+
+
+@router.get('/daily-count')
+def greeting_daily_count(db: Session = Depends(get_db)):
+    return daily_greeting_count(db)
 
 
 async def run_reserved(batch_id):

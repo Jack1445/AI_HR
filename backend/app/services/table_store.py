@@ -53,7 +53,7 @@ class TableStore:
         fields = {f.id: f for f in payload.config.fields}
         known = SYSTEM_FIELDS[self.scope] | set(fields)
         for view in payload.config.views:
-            references = {c.id for c in view.columns} | {f.field for f in view.filters} | {s.field for s in view.sorts} | ({view.group} if view.group else set())
+            references = {c.id for c in view.columns} | {f.field for f in view.filters} | {f.field for group in view.filter_groups for f in group.filters} | {s.field for s in view.sorts} | ({view.group} if view.group else set())
             if references - known:
                 raise HTTPException(422, '视图引用了不存在的字段')
         for f in old.fields:

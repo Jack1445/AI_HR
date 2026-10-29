@@ -48,6 +48,7 @@ export interface LocalCandidate {
   communication_checked_at: string | null;
   communication_evidence: { recruiter_sent: boolean; candidate_sent: boolean; request_resume_enabled: boolean | null; mutual_reply_required: boolean; attachment_present: boolean } | null;
   communication_error: string;
+  resume_consent: 'none' | 'clicked';
   communication_stale: boolean;
   updated_at: string;
 }
@@ -55,7 +56,7 @@ export interface LocalCandidate {
 export interface LocalCandidateListResponse { candidates: LocalCandidate[]; total: number; }
 export interface LocalJob { id: string; remote_id: string; title: string; status: string; label: string; meta: string[]; stats: Record<string, number>; updated_at: string; }
 export interface LocalJobListResponse { jobs: LocalJob[]; total: number; }
-export interface SyncResponse { sync_id: string; scope: string; status: string; records_seen: number; records_written: number; error_summary: string; diagnostic_log?: string | null; since: string | null; verification_ids: string[]; history_summary: { scanned?: number; in_range?: number; undated?: number; unidentified?: number; ambiguous_legacy?: number; unmatched?: number }; }
+export interface SyncResponse { sync_id: string; scope: string; status: string; records_seen: number; records_written: number; error_summary: string; diagnostic_log?: string | null; since: string | null; verification_ids: string[]; history_summary: { scanned?: number; in_range?: number; undated?: number; unidentified?: number; ambiguous_legacy?: number; unmatched?: number; stop_reason?: string }; }
 export interface DebugEvent { time?: string; pid?: number; event?: string; elapsed_seconds?: number; details?: Record<string, unknown>; }
 export interface TimingRow { stage: string; command?: string; status: string; elapsed_seconds: number; }
 export interface DebugStatus {
@@ -132,12 +133,13 @@ export async function fetchLocalCandidates(params: Record<string, string | undef
   const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value) as [string, string][]).toString();
   return fetchJson<LocalCandidateListResponse>(`/api/local/candidates${query ? `?${query}` : ""}`, signal, "读取本地候选人失败");
 }
-export async function syncLocal(scope = "all", options: { diagnostic?: boolean; since?: string } = {}): Promise<SyncResponse> {
+export async function syncLocal(scope = "all", options: { diagnostic?: boolean; since?: string; signal?: AbortSignal } = {}): Promise<SyncResponse> {
   const query = new URLSearchParams({ scope });
   if (options.diagnostic) query.set("diagnostic", "true");
   if (options.since) query.set("since", options.since);
-  return fetchJson<SyncResponse>(`/api/local/sync?${query.toString()}`, undefined, "同步失败", { method: "POST" });
+  return fetchJson<SyncResponse>(`/api/local/sync?${query.toString()}`, options.signal, "同步失败", { method: "POST" });
 }
+export async function stopSync(): Promise<{ stopped: boolean }> { return fetchJson<{ stopped: boolean }>("/api/local/sync/stop", undefined, "停止同步失败", { method: "POST" }); }
 export async function fetchCandidateDetail(id: string): Promise<CandidateDetail> { return fetchJson<CandidateDetail>(`/api/local/candidates/${encodeURIComponent(id)}`, undefined, "读取候选人详情失败"); }
 export async function updateCandidate(id: string, body: Record<string, unknown>): Promise<CandidateDetail> { return fetchJson<CandidateDetail>(`/api/local/candidates/${encodeURIComponent(id)}`, undefined, "更新候选人失败", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); }
 export async function matchCandidate(id: string, jobId: string): Promise<MatchResult> { return fetchJson<MatchResult>(`/api/candidates/${encodeURIComponent(id)}/match`, undefined, "匹配分析失败", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ job_id: jobId }) }); }
@@ -157,7 +159,9 @@ export async function allowRecommendationAgain(id: string): Promise<void> { retu
 export async function fetchRecommendations(signal?: AbortSignal, jobKey?: string): Promise<RecommendationSnapshot> { return fetchJson<RecommendationSnapshot>(`/api/local/recommendations${jobKey ? `?job_key=${encodeURIComponent(jobKey)}` : ''}`, signal, '读取本地推荐快照失败'); }
 export async function readRecommendations(jobKey: string): Promise<RecommendationReadResult> { return fetchJson<RecommendationReadResult>('/api/local/recommendations/read', undefined, '推荐读取失败', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ job_key: jobKey }) }); }
 export async function deleteRecommendation(id: string): Promise<void> { return fetchJson<void>(`/api/local/recommendations/${encodeURIComponent(id)}`, undefined, '删除失败', { method: 'DELETE' }); }
-export async function verifyCommunications(ids: string[]): Promise<LocalCandidateListResponse> { return fetchJson<LocalCandidateListResponse>('/api/local/communications/verify', undefined, '核验沟通状态失败', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ candidate_ids: ids }) }); }
+export async function verifyCommunications(ids: string[], signal?: AbortSignal, acceptIncomingResumes = false): Promise<LocalCandidateListResponse> { return fetchJson<LocalCandidateListResponse>('/api/local/communications/verify', signal, '核验沟通状态失败', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ candidate_ids: ids, accept_incoming_resumes: acceptIncomingResumes }) }); }
+export interface DownloadedAttachment { id: string; candidate_id: string; original_name: string; size_bytes: number; already_saved: boolean; saved_folder: string; }
+export async function downloadCommunicationAttachment(candidateId: string, jobId: string): Promise<DownloadedAttachment> { return fetchJson<DownloadedAttachment>('/api/local/communications/attachment', undefined, '下载附件简历失败', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ candidate_id: candidateId, job_id: jobId }) }); }
 
 export async function fetchJson<T>(path: string, signal: AbortSignal | undefined, fallbackMessage: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, { ...init, signal });

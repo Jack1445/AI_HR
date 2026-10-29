@@ -4,8 +4,9 @@ export type CellValue = string | number | boolean | string[] | null;
 export interface CustomField { id: string; name: string; type: FieldType; options: string[] }
 export interface ColumnConfig { id: string; name: string; width: number; hidden: boolean; fixed: '' | 'left' | 'right' }
 export interface FilterRule { field: string; op: 'contains' | 'not_contains' | 'eq' | 'neq' | 'empty' | 'not_empty' | 'gt' | 'gte' | 'lt' | 'lte'; value: string }
+export interface FilterGroup { filters: FilterRule[]; conjunction: 'and' | 'or' }
 export interface SortRule { field: string; direction: 'asc' | 'desc' }
-export interface TableView { id: string; name: string; columns: ColumnConfig[]; filters: FilterRule[]; conjunction: 'and' | 'or'; sorts: SortRule[]; group: string; collapsed: string[]; order: string[] }
+export interface TableView { id: string; name: string; columns: ColumnConfig[]; filters: FilterRule[]; conjunction: 'and' | 'or'; filter_groups?: FilterGroup[]; sorts: SortRule[]; group: string; collapsed: string[]; order: string[] }
 export interface TableConfig { fields: CustomField[]; views: TableView[]; active_view: string }
 export interface TableState { revision: number; config: TableConfig; values: Record<string, Record<string, CellValue>> }
 export const fieldTypes: Record<FieldType, string> = { text: '文本', multiline: '多行文本', number: '数字', date: '日期', select: '单选', multi: '多选', checkbox: '复选框' };
@@ -33,11 +34,20 @@ export function matches(value: CellValue | undefined, rule: FilterRule, type: Fi
   const b = type === 'number' ? Number(needle) : needle;
   return rule.op === 'gt' ? a > b : rule.op === 'gte' ? a >= b : rule.op === 'lt' ? a < b : a <= b;
 }
+export function filterCount(view: TableView) {
+  return view.filter_groups?.length ? view.filter_groups.reduce((sum, group) => sum + group.filters.length, 0) : view.filters.length;
+}
 export function selectTableRows<R extends { id: string }>(rows: R[], view: TableView, get: (row: R, field: string) => CellValue | undefined, type: (field: string) => FieldType, search = '') {
   const order = new Map(view.order.map((id, index) => [id, index]));
   const result = rows.filter(row => {
-    const results = view.filters.map(rule => matches(get(row, rule.field), rule, type(rule.field)));
-    const matched = !results.length || (view.conjunction === 'and' ? results.every(Boolean) : results.some(Boolean));
+    const evaluate = (rules: FilterRule[], conjunction: 'and' | 'or') => {
+      const results = rules.map(rule => matches(get(row, rule.field), rule, type(rule.field)));
+      return !results.length || (conjunction === 'and' ? results.every(Boolean) : results.some(Boolean));
+    };
+    const groups = view.filter_groups ?? [];
+    const matched = groups.length
+      ? (view.conjunction === 'and' ? groups.every(group => evaluate(group.filters, group.conjunction)) : groups.some(group => evaluate(group.filters, group.conjunction)))
+      : evaluate(view.filters, view.conjunction);
     return matched && (!search.trim() || view.columns.some(c => cellText(get(row, c.id)).toLowerCase().includes(search.trim().toLowerCase())));
   });
   return result.sort((a, b) => {

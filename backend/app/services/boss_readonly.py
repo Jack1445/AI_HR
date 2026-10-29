@@ -106,7 +106,8 @@ class BossReadOnlyService:
         if history:
             try:
                 snapshot = json.loads(result.stdout)
-                if snapshot.get("version") != 1 or snapshot.get("stop_reason") != "stable_bottom" or snapshot.get("since") != (since.isoformat() if since else None):
+                valid_stop = {"stable_bottom", "date_cutoff"} if since else {"stable_bottom"}
+                if snapshot.get("version") != 1 or snapshot.get("stop_reason") not in valid_stop or snapshot.get("since") != (since.isoformat() if since else None):
                     raise ValueError("历史列表没有完整加载或日期范围不符")
                 rows = snapshot["rows"]
                 if not isinstance(rows, list) or any(not isinstance(row, dict) or any(not isinstance(row.get(key), str) for key in ("sourceId", "name", "job", "time", "message")) or not row["sourceId"].strip() or not row["name"] or type(row.get("legacyMatchUnique")) is not bool or type(row.get("unreadCount")) is not int for row in rows):

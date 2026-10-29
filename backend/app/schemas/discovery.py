@@ -14,6 +14,7 @@ class CommunicationEvidence(BaseModel):
     request_resume_enabled: bool | None
     mutual_reply_required: bool
     attachment_present: bool
+    pending_attachment_request: bool = False
 
 
 class CommunicationResult(BaseModel):
@@ -24,6 +25,7 @@ class CommunicationResult(BaseModel):
     time: str = ''
     checked_at: datetime
     error: str = ''
+    resume_consent: Literal['none', 'clicked'] = 'none'
 
 
 class CommunicationSnapshot(BaseModel):
@@ -33,6 +35,21 @@ class CommunicationSnapshot(BaseModel):
 
 class ClassifyRequest(BaseModel):
     candidate_ids: list[str] = Field(min_length=1, max_length=10)
+    accept_incoming_resumes: bool = False
+
+
+class AttachmentDownloadRequest(BaseModel):
+    candidate_id: str = Field(min_length=1)
+    job_id: str = Field(min_length=1)
+
+
+class AttachmentDownloadReceipt(BaseModel):
+    id: str
+    candidate_id: str
+    original_name: str
+    size_bytes: int
+    already_saved: bool
+    saved_folder: str
 
 
 class OnlineResumeScreenshot(BaseModel):

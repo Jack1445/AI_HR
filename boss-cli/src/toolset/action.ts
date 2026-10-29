@@ -431,11 +431,11 @@ async function updateCandidateRemark(page: Page, remarkText: string): Promise<st
  * 对方「附件简历」确认卡片上点击「同意」。
  * 对应按钮 disabled 时视为已处理。
  */
-async function runIncomingResumeCardAction(page: Page, which: IncomingCardBtn): Promise<string> {
+async function runIncomingResumeCardAction(page: Page, which: IncomingCardBtn, expected?: { sourceId: string; name: string; job: string }): Promise<string> {
   await ensureInCandidateChat(page, '附件简历处理');
   await sleepRandom(200, 550);
 
-  const result = (await page.evaluate((w: 'agree' | 'refuse') => {
+  const result = (await page.evaluate((w: 'agree' | 'refuse', target?: { sourceId: string; name: string; job: string }) => {
     function norm(v: string | null | undefined) {
       return (v ?? "").replace(/\\s+/g, " ").trim();
     }
@@ -452,7 +452,17 @@ async function runIncomingResumeCardAction(page: Page, which: IncomingCardBtn): 
       }
       return t === "拒绝" || t.indexOf("拒绝") === 0;
     }
+    if (target) {
+      const selected = document.querySelector('.geek-item.selected');
+      if (!selected || selected.getAttribute('data-id') !== target.sourceId ||
+          norm(selected.querySelector('.geek-name')?.textContent) !== target.name ||
+          norm(selected.querySelector('.source-job')?.textContent) !== target.job ||
+          norm(document.querySelector('.base-info-single-container .name-box')?.textContent) !== target.name) {
+        throw new Error('附件简历同意前会话身份已变化，未点击');
+      }
+    }
     const items = Array.from(document.querySelectorAll(".chat-message-list .message-item"));
+    let handled = false;
     for (let i = items.length - 1; i >= 0; i--) {
       const friend = items[i].querySelector(".item-friend");
       if (!friend) continue;
@@ -464,15 +474,16 @@ async function runIncomingResumeCardAction(page: Page, which: IncomingCardBtn): 
         const t = norm(btn.textContent);
         if (!matchesLabel(t, w)) continue;
         if (isDisabledBtn(btn)) {
-          return { kind: "already_handled", which: w };
+          handled = true;
+          continue;
         }
         (btn as HTMLElement).scrollIntoView({ block: "center", inline: "nearest" });
         (btn as HTMLElement).click();
         return { kind: "clicked", which: w };
       }
     }
-    return { kind: "not_found", which: w };
-  }, which)) as
+    return { kind: handled ? "already_handled" : "not_found", which: w };
+  }, which, expected)) as
     | { kind: 'clicked'; which: IncomingCardBtn }
     | { kind: 'already_handled'; which: IncomingCardBtn }
     | { kind: 'not_found'; which: IncomingCardBtn };
@@ -560,7 +571,7 @@ export type ChatPageAction =
 
 export async function runChatActionOnCurrentConversation(
   page: Page,
-  options: { action: ChatPageAction; remark?: string },
+  options: { action: ChatPageAction; remark?: string; expectedTarget?: { sourceId: string; name: string; job: string } },
 ): Promise<string> {
   const action = options.action;
   switch (action) {
@@ -587,7 +598,7 @@ export async function runChatActionOnCurrentConversation(
       }
     }
     case 'agree-resume':
-      return runIncomingResumeCardAction(page, 'agree');
+      return runIncomingResumeCardAction(page, 'agree', options.expectedTarget);
     case 'request-attachment-resume':
       return runRequestAttachmentResume(page);
     case 'exchange-wechat':

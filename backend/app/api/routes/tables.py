@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, delete
 from sqlalchemy.orm import Session
 from app.db.session import get_db
-from app.db.models import (CandidateRecord, CommunicationRecycleRecord, JobCandidateRecord, CandidateTagRecord, CandidateNoteRecord, StageHistoryRecord, TimelineEventRecord, AIAnalysisRecord, ActionRecord, ResumeDocumentRecord)
+from app.db.models import (CandidateRecord, CommunicationAttachmentRecord, CommunicationRecycleRecord, JobCandidateRecord, CandidateTagRecord, CandidateNoteRecord, StageHistoryRecord, TimelineEventRecord, AIAnalysisRecord, ActionRecord, ResumeDocumentRecord)
 from app.core.config import get_settings
 from app.core.json_utils import loads
 from app.schemas.tables import Scope, SaveConfig, SaveCells, DeleteRows
@@ -36,6 +36,12 @@ def remove_communication(db: Session, candidate_id: str):
         raise LookupError('候选人已删除，请刷新')
     files = []
     root = (Path(__file__).resolve().parents[4] / get_settings().data_dir / 'resumes').resolve()
+    export_root = (Path(__file__).resolve().parents[4] / get_settings().data_dir / 'downloaded-resumes').resolve()
+    for attachment in db.scalars(select(CommunicationAttachmentRecord).where(CommunicationAttachmentRecord.candidate_id == row.id)):
+        export_path = (export_root / attachment.export_path).resolve()
+        if not export_path.is_relative_to(export_root):
+            raise ValueError('岗位附件文件不在本地下载目录，已停止删除')
+        files.append(export_path)
     for document in db.scalars(select(ResumeDocumentRecord).where(ResumeDocumentRecord.candidate_id == row.id)):
         path = Path(document.stored_path)
         if not path.is_absolute():
@@ -44,11 +50,13 @@ def remove_communication(db: Session, candidate_id: str):
         if not path.is_relative_to(root):
             raise ValueError('简历文件不在本地简历目录，已停止删除')
         files.append(path)
-    # This is the same local source key as synchronization (currently name+job),
-    # not a BOSS user ID. Do not merge or exclude by name alone.
-    if db.get(CommunicationRecycleRecord, row.remote_id) is None:
+    # New linked records use the recommendation recycle entry as the shared
+    # tombstone. Keep the old communication tombstone only for legacy rows
+    # created before recommendation linking was introduced.
+    linked = DiscoveryService(db, get_boss_cli_adapter()).recycle_linked_recommendations(row.id)
+    if not linked and db.get(CommunicationRecycleRecord, row.remote_id) is None:
         db.add(CommunicationRecycleRecord(remote_id=row.remote_id, name=row.name, source_job=loads(row.source_snapshot, {}).get('job', '')))
-    for model in (JobCandidateRecord, CandidateTagRecord, CandidateNoteRecord, StageHistoryRecord, TimelineEventRecord, AIAnalysisRecord, ActionRecord, ResumeDocumentRecord):
+    for model in (CommunicationAttachmentRecord, JobCandidateRecord, CandidateTagRecord, CandidateNoteRecord, StageHistoryRecord, TimelineEventRecord, AIAnalysisRecord, ActionRecord, ResumeDocumentRecord):
         db.execute(delete(model).where(model.candidate_id == row.id))
     cleanup_table_row(db, 'communications', row.id)
     db.delete(row)
@@ -79,7 +87,7 @@ async def delete_rows(scope: Scope, payload: DeleteRows, db: Session = Depends(g
 
 @router.get('/communications/recycle-bin')
 def communication_bin(db: Session = Depends(get_db)):
-    return [{'id': r.remote_id, 'name': r.name, 'source_job': r.source_job} for r in db.scalars(select(CommunicationRecycleRecord).order_by(CommunicationRecycleRecord.name))]
+    return DiscoveryService(db, get_boss_cli_adapter()).recycle_bin(None).model_dump()['candidates']
 
 
 @router.post('/communications/recycle-bin/{remote_id}/restore', status_code=204)
@@ -87,8 +95,7 @@ async def allow_again(remote_id: str, db: Session = Depends(get_db)):
     if manual_read_lock.locked():
         raise HTTPException(409, '已有读取任务，请完成后再操作回收站')
     async with manual_read_lock:
-        row = db.get(CommunicationRecycleRecord, remote_id)
-        if row is None:
-            raise HTTPException(404, '回收站记录不存在')
-        db.delete(row)
-        db.commit()
+        try:
+            DiscoveryService(db, get_boss_cli_adapter()).allow_recommendation_again(remote_id)
+        except LookupError as error:
+            raise HTTPException(404, str(error)) from error

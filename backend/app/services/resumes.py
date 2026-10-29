@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.core.json_utils import dumps, loads
-from app.db.models import AuditEventRecord, CandidateRecord, ResumeDocumentRecord
+from app.db.models import AuditEventRecord, CandidateRecord, CommunicationAttachmentRecord, ResumeDocumentRecord
 from app.schemas.local import ResumeResponse
 
 
@@ -144,8 +144,20 @@ class ResumeService:
         path = Path(row.stored_path)
         if not path.is_absolute():
             path = Path(__file__).resolve().parents[3] / path
+        export_root = (Path(__file__).resolve().parents[3] / self.settings.data_dir / 'downloaded-resumes').resolve()
+        attachments = self.db.scalars(select(CommunicationAttachmentRecord).where(CommunicationAttachmentRecord.resume_id == resume_id)).all()
+        export_paths = []
+        for attachment in attachments:
+            export_path = (export_root / attachment.export_path).resolve()
+            if not export_path.is_relative_to(export_root):
+                raise ValueError('岗位附件文件路径无效，已停止删除')
+            export_paths.append(export_path)
+        for export_path in export_paths:
+            export_path.unlink(missing_ok=True)
         if path.exists() and path.is_file():
             path.unlink()
+        for attachment in attachments:
+            self.db.delete(attachment)
         self.db.add(AuditEventRecord(actor="local", event_type="resume_deleted", target_type="resume", target_id=row.id, detail_json=dumps({"sha256": row.sha256})))
         self.db.delete(row)
         self.db.commit()

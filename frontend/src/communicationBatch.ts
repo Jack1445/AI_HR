@@ -7,6 +7,7 @@ export interface CommunicationProgress {
   classified: number;
   unknown: number;
   failed: number;
+  consented: number;
 }
 export interface CommunicationFailure { ids: string[]; names: string[]; error: string }
 export interface CommunicationResult extends CommunicationProgress { failures: CommunicationFailure[] }
@@ -28,15 +29,18 @@ export async function verifyCommunicationBatch(
   verify: (ids: string[]) => Promise<LocalCandidateListResponse>,
   onSaved: (rows: LocalCandidate[]) => void,
   onProgress: (progress: CommunicationProgress) => void,
+  signal?: AbortSignal,
 ): Promise<CommunicationResult> {
   const unique = [...new Map(people.map(person => [person.id, person])).values()];
-  const progress: CommunicationProgress = { total: unique.length, completed: 0, verified: 0, classified: 0, unknown: 0, failed: 0 };
+  const progress: CommunicationProgress = { total: unique.length, completed: 0, verified: 0, classified: 0, unknown: 0, failed: 0, consented: 0 };
   const failures: CommunicationFailure[] = [];
   onProgress({ ...progress });
   for (let offset = 0; offset < unique.length; offset += 10) {
+    if (signal?.aborted) throw new DOMException('已停止核验', 'AbortError');
     const batch = unique.slice(offset, offset + 10), ids = batch.map(person => person.id);
     try {
       const result = await verify(ids);
+      if (signal?.aborted) throw new DOMException('已停止核验', 'AbortError');
       const returned = new Set(result.candidates.map(row => row.id));
       if (result.total !== ids.length || result.candidates.length !== ids.length || returned.size !== ids.length || ids.some(id => !returned.has(id))) throw new Error('核验结果与本批候选人不一致');
       onSaved(result.candidates);
@@ -46,8 +50,10 @@ export async function verifyCommunicationBatch(
       progress.classified += known;
       progress.unknown += batch.length - failed.length - known;
       progress.failed += failed.length;
+      progress.consented += result.candidates.filter(row => row.resume_consent === 'clicked').length;
       failures.push(...failed.map(row => ({ ids: [row.id], names: [row.name], error: row.communication_error })));
     } catch (reason) {
+      if (signal?.aborted) throw reason;
       progress.failed += batch.length;
       failures.push({ ids, names: batch.map(person => person.name), error: reason instanceof Error ? reason.message : '核验失败' });
     }

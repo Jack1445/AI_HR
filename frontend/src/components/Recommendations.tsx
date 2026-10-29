@@ -11,7 +11,7 @@ import { captureRecommendationBatch, type ResumeBatchProgress, type Recommendati
 
 const savedTime = (value: string) => new Date(/Z$|[+-]\d{2}:\d{2}$/.test(value) ? value : `${value}Z`).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 
-export function Recommendations({ busy, setBusy, onActivity }: { busy: boolean; setBusy: (busy: boolean) => void; onActivity: (activity: RecommendationActivity | null) => void }) {
+export function Recommendations({ active, busy, setBusy, onActivity }: { active: boolean; busy: boolean; setBusy: (busy: boolean) => void; onActivity: (activity: RecommendationActivity | null) => void }) {
   const [snapshot, setSnapshot] = useState<RecommendationSnapshot | null>(null);
   const [jobs, setJobs] = useState<RecommendationJob[]>([]);
   const [jobKey, setJobKey] = useState('');
@@ -61,6 +61,16 @@ export function Recommendations({ busy, setBusy, onActivity }: { busy: boolean; 
     }).catch(reason => { if (!controller.signal.aborted) setError(String(reason.message ?? reason)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [jobKey]);
+  // Communication deletion can remove a linked recommendation while this page
+  // is hidden. Refresh local snapshots when returning to this tab.
+  useEffect(() => {
+    if (!active || busy || !jobKey) return;
+    const controller = new AbortController();
+    Promise.all([fetchRecommendations(controller.signal, jobKey), fetchRecommendationRecycleBin(controller.signal, jobKey), fetchRecommendationJobs(controller.signal)]).then(([library, bin, availableJobs]) => {
+      if (!controller.signal.aborted) { setSnapshot(library); setTrash(bin.candidates); setJobs(availableJobs.jobs); }
+    }).catch(reason => { if (!controller.signal.aborted) setError(String(reason.message ?? reason)); });
+    return () => controller.abort();
+  }, [active, busy, jobKey]);
   const refreshJobs = async () => {
     if (locked.current || busy) return;
     locked.current = true; setJobsLoading(true); setBusy(true); setError(null);
@@ -145,7 +155,7 @@ export function Recommendations({ busy, setBusy, onActivity }: { busy: boolean; 
   managedFields.push({ id: 'source_job', name: '来源岗位', type: 'text', defaultHidden: true, width: 200, get: p => p.source_job }, { id: 'notes', name: '本地备注', type: 'multiline', defaultHidden: true, width: 200, editable: true, get: () => null });
 
   return <section className="recommendations-page panel">
-    <div className="recommendations-heading"><div><div className="section-kicker">本地人才库</div><h2><TeamOutlined /> 推荐牛人</h2><p>按岗位积累推荐人选，在当前岗位内查重、保存简历与本地标注。</p></div><Space wrap><Button icon={<DeleteOutlined />} disabled={busy || loading || !jobKey} onClick={() => void openTrash()}>回收站{trash.length ? `（${trash.length}）` : ''}</Button><Button type="primary" icon={<SearchOutlined />} loading={reading} disabled={busy || loading || !selectedJob?.available} onClick={() => void read()}>{reading ? batchProgress ? `简历截图 ${batchProgress.completed}/${batchProgress.total}` : '正在查重并寻找新人…' : '新增 20 人（含简历）'}</Button></Space></div>
+    <div className="recommendations-heading"><div><div className="section-kicker">本地人才库</div><h2><TeamOutlined /> 推荐牛人</h2><p>按岗位积累推荐人选，在当前岗位内查重、保存简历与本地标注。</p></div><Space wrap><Tooltip title={greeting.dailyError || '所有岗位合计；只统计本平台当天确认发送成功的招呼，已招呼跳过及失败不计'}><div className="recommendation-daily-count" role="status" aria-live="polite"><MessageOutlined /><span>{(greeting.dailyCount?.date ?? beijingDate(new Date().toISOString())).replace(/-/g, '/')}打招呼次数：</span><strong>{greeting.dailyCount?.count ?? '—'}/{greeting.dailyCount?.limit ?? 200}</strong></div></Tooltip><Button icon={<DeleteOutlined />} disabled={busy || loading || !jobKey} onClick={() => void openTrash()}>回收站{trash.length ? `（${trash.length}）` : ''}</Button><Button type="primary" icon={<SearchOutlined />} loading={reading} disabled={busy || loading || !selectedJob?.available} onClick={() => void read()}>{reading ? batchProgress ? `简历截图 ${batchProgress.completed}/${batchProgress.total}` : '正在查重并寻找新人…' : '新增 20 人（含简历）'}</Button></Space></div>
     <div className="recommendation-job-bar"><div className="recommendation-job-picker"><span className="section-kicker">推荐岗位</span><Select aria-label="选择推荐岗位" showSearch optionFilterProp="label" placeholder="先刷新 BOSS 岗位，再选择岗位" value={jobKey || undefined} disabled={busy || jobsLoading || loading} onChange={setJobKey} options={jobs.map(job => ({ value: job.id, label: `${job.label} · ${job.count} 人${job.available ? '' : '（本地历史）'}` }))} /></div><Button icon={<ReloadOutlined />} loading={jobsLoading} disabled={busy && !jobsLoading} onClick={() => void refreshJobs()}>刷新 BOSS 岗位</Button><span className="recommendation-job-hint">{selectedJob?.available ? '新增时自动切换并核对 BOSS 对应岗位' : '刷新只读取岗位选项；选择可用岗位后才能新增人选'}</span></div>
     <div className="recommendations-notice">每次新增最多 20 人 · 当前岗位内按姓名＋基本信息查重（含回收站） · 只为本次新人截图 · 历史记录持续保留</div>
     {(reading || batchProgress) && <div className="recommendation-batch" role="status" aria-live="polite"><div className="recommendation-batch-title"><strong>{reading ? batchProgress ? `正在读取${batchProgress.currentName ? `：${batchProgress.currentName}` : '在线简历'}…` : '正在获取推荐列表…' : batchProgress?.total ? '本次读取完成' : '本次没有找到新的人选，原有名单已保留'}</strong><span>{batchProgress ? `已处理 ${batchProgress.completed}/${batchProgress.total} 人 · 截图成功 ${batchProgress.completed - batchProgress.failed} 人${batchProgress.failed ? ` · 失败 ${batchProgress.failed} 人，可单独重试` : ''}` : '先查重，随后只为新增人选打开简历并截图'}</span></div>{batchProgress && batchProgress.total > 0 && <Progress percent={Math.round(batchProgress.completed / batchProgress.total * 100)} size="small" showInfo={false} status={reading ? 'active' : batchProgress.failed ? 'normal' : 'success'} strokeColor="#398e70" />}<span className="muted">{reading ? '请保持此页面打开，完成的截图会逐行显示。' : batchProgress && batchProgress.completed > batchProgress.failed ? '成功的截图已保存在本地，可点击缩略图查看。' : '暂无新截图，失败项可使用行内按钮单独重试。'}</span></div>}
@@ -158,8 +168,8 @@ export function Recommendations({ busy, setBusy, onActivity }: { busy: boolean; 
       setPreview(null); setTrash((await fetchRecommendationRecycleBin(undefined, jobKey)).candidates); setJobs((await fetchRecommendationJobs()).jobs);
     }} />
     <div className="recommendation-table-footer"><FileImageOutlined /> 在线简历列保存页面截图；点击缩略图可放大查看。刷新网页只读取本地已保存内容。</div>
-    <Modal title={<Space><DeleteOutlined /><span>推荐牛人回收站 · {selectedJob?.label}</span><Tag>{trash.length} 人</Tag></Space>} open={trashOpen} onCancel={() => { if (!restoring) setTrashOpen(false); }} closable={!restoring} maskClosable={!restoring} width={840} footer={<Button disabled={!!restoring} onClick={() => setTrashOpen(false)}>关闭</Button>}>
-      <div className="recycle-bin-notice">当前岗位删除的人选仅在此岗位排除；旧版“历史全局排除”继续适用于所有岗位。只保留姓名和基本信息用于查重，同名但基本信息不同的人选仍可新增。点击“允许重新读取”后，下次在 BOSS 遇到此人时可重新入库；已删除的资料和截图需重新读取。</div>
+    <Modal title={<Space><DeleteOutlined /><span>人选共享回收站 · {selectedJob?.label}</span><Tag>{trash.length} 人</Tag></Space>} open={trashOpen} onCancel={() => { if (!restoring) setTrashOpen(false); }} closable={!restoring} maskClosable={!restoring} width={840} footer={<Button disabled={!!restoring} onClick={() => setTrashOpen(false)}>关闭</Button>}>
+      <div className="recycle-bin-notice">推荐页未打招呼的人选删除后进入回收站；已打招呼的人选只从推荐页隐藏，本地资料和后续沟通同步资格保留。沟通候选人页面删除才会正式进入回收站。回收站只保留姓名和基本信息用于查重，点击“允许重新读取”后下次在 BOSS 遇到此人时可重新入库。</div>
       <Input className="recycle-bin-search" prefix={<SearchOutlined />} placeholder="搜索姓名或基本信息" aria-label="搜索回收站" allowClear disabled={busy || trashLoading} value={trashQuery} onChange={event => { setTrashQuery(event.target.value); setTrashSelection([]); }} />
       <div className="recycle-batch-toolbar"><Checkbox disabled={busy || trashLoading || !filteredTrash.length} checked={!!filteredTrash.length && filteredTrash.every(person => trashSelection.includes(person.id))} indeterminate={trashSelection.length > 0 && !filteredTrash.every(person => trashSelection.includes(person.id))} onChange={event => setTrashSelection(event.target.checked ? filteredTrash.map(person => person.id) : [])}>{trashQuery.trim() ? '全选搜索结果' : '全选全部'}（{filteredTrash.length} 人）</Checkbox><Space wrap><span className="muted">已选 {trashSelection.length} 人 · 可跨页选择</span><Button type="primary" size="small" icon={<UndoOutlined />} loading={!!restoring} disabled={busy || trashLoading || !trashSelection.length} onClick={() => void allowAgain(trash.filter(person => trashSelection.includes(person.id)))}>批量允许重新读取</Button></Space></div>
       {restoring && restoreProgress && <Progress size="small" percent={Math.round(restoreProgress.completed / restoreProgress.total * 100)} format={() => `${restoreProgress.completed}/${restoreProgress.total}`} />}

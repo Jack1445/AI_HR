@@ -7,10 +7,11 @@ import './RecommendationGreetings.css';
 
 interface GreetingItem { candidate_id: string; name: string; base_info: string; status: string; detail: string }
 interface GreetingBatch { id: string; job_key: string; job_label: string; status: string; total: number; completed: number; sent: number; already: number; items: GreetingItem[]; created_at: string }
+interface DailyGreetingCount { date: string; count: number; limit: number }
 const active = (batch?: GreetingBatch | null) => !!batch && ['queued', 'running'].includes(batch.status);
 const statusLabels: Record<string, string> = { pending: '等待中', executing: '处理中', sent: '已发送', already: '已招呼 · 跳过', clicked: '已点击 · 待核实', unknown: '结果待核实', not_found: '未找到', mismatch: '信息不符', blocked: 'BOSS 限制', skipped: '未执行' };
-async function request<T>(method = 'GET', body?: unknown): Promise<T> {
-  const response = await fetch(`${import.meta.env.VITE_API_BASE_URL ?? ''}/api/recommendation-greetings`, { method, headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined });
+async function request<T>(method = 'GET', body?: unknown, path = ''): Promise<T> {
+  const response = await fetch(`${import.meta.env.VITE_API_BASE_URL ?? ''}/api/recommendation-greetings${path}`, { method, headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined });
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     throw new Error(typeof data.detail === 'string' ? data.detail : `请求失败（${response.status}）`);
@@ -23,6 +24,8 @@ export function useRecommendationGreetings(jobKey: string, jobLabel: string, set
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
   const [pollError, setPollError] = useState('');
+  const [dailyCount, setDailyCount] = useState<DailyGreetingCount | null>(null);
+  const [dailyError, setDailyError] = useState('');
   const [draft, setDraft] = useState<{ request_id: string; job_key: string; job_label: string; people: RecommendedPerson[] } | null>(null);
   const [starting, setStarting] = useState(false);
   const [details, setDetails] = useState(false);
@@ -30,6 +33,8 @@ export function useRecommendationGreetings(jobKey: string, jobLabel: string, set
   const ownedBusy = useRef(false);
   const submitting = useRef(false);
   const sequence = useRef(0);
+  const lastCountPoll = useRef(0);
+  const wasRunning = useRef(false);
   const current = batches.find(active) ?? batches.find(b => b.job_key === jobKey);
   const running = active(current);
   const chosen = batches.find(b => b.id === historyId) ?? current;
@@ -43,6 +48,17 @@ export function useRecommendationGreetings(jobKey: string, jobLabel: string, set
       try {
         const data = await request<GreetingBatch[]>();
         if (!disposed && seq === sequence.current) { setBatches(data); setReady(true); setPollError(''); }
+        const activeNow = data.some(active);
+        if (activeNow || wasRunning.current || Date.now() - lastCountPoll.current >= 30_000) {
+          lastCountPoll.current = Date.now();
+          try {
+            const count = await request<DailyGreetingCount>('GET', undefined, '/daily-count');
+            if (!disposed && seq === sequence.current) { setDailyCount(count); setDailyError(''); }
+          } catch (reason) {
+            if (!disposed && seq === sequence.current) setDailyError(reason instanceof Error ? reason.message : '今日打招呼次数暂不可用');
+          }
+        }
+        wasRunning.current = activeNow;
       } catch (reason) { if (!disposed) { setReady(false); setPollError(`无法更新打招呼任务：${reason instanceof Error ? reason.message : '连接失败'}。请恢复连接后查看，勿重复发送。`); } }
       if (!disposed) timer = setTimeout(poll, 2000);
     };
@@ -77,7 +93,7 @@ export function useRecommendationGreetings(jobKey: string, jobLabel: string, set
     { title: '执行结果', dataIndex: 'detail', key: 'detail' },
   ];
   return {
-    ready, activity, greetedIds,
+    ready, activity, greetedIds, dailyCount, dailyError,
     select: (people: RecommendedPerson[]) => { setError(''); setDraft({ request_id: crypto.randomUUID(), job_key: jobKey, job_label: jobLabel, people: [...people] }); },
     panel: <>
       {error && <Alert className="greeting-feedback" type="warning" showIcon message={error} />}

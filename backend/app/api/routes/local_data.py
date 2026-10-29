@@ -4,7 +4,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.adapters.boss_cli import BossCliCommandNotFoundError, BossCliExecutionError, BossCliTimeoutError
+from app.adapters.boss_cli import BossCliCancelledError, BossCliCommandNotFoundError, BossCliExecutionError, BossCliTimeoutError
 from app.db.models import CandidateRecord, JobCandidateRecord, MessageTemplateRecord, TimelineEventRecord
 from app.db.session import get_db
 from app.parsers.boss_cli_output import BossCliOutputError
@@ -27,6 +27,8 @@ def map_sync_error(error: Exception) -> HTTPException:
         return HTTPException(status_code=500, detail="本地数据库读写失败，请查看诊断日志")
     if isinstance(error, BossCliTimeoutError):
         return HTTPException(status_code=504, detail=str(error))
+    if isinstance(error, BossCliCancelledError):
+        return HTTPException(status_code=409, detail=str(error))
     if isinstance(error, (BossCliCommandNotFoundError, BossCliExecutionError, BossCliOutputError)):
         return HTTPException(status_code=502, detail=str(error))
     detail = str(error).strip() or repr(error)
@@ -54,6 +56,12 @@ async def sync(
         if svc.diagnostic_log_path:
             mapped.detail = f"{mapped.detail}；诊断日志：{svc.diagnostic_log_path}"
         raise mapped from error
+
+
+@router.post("/sync/stop", response_model=dict[str, bool])
+async def stop_sync() -> dict[str, bool]:
+    """Stop the active sync or verification CLI command without waiting on the read lock."""
+    return {"stopped": await get_boss_cli_adapter().cancel_active()}
 
 
 @router.get("/jobs", response_model=LocalJobListResponse)

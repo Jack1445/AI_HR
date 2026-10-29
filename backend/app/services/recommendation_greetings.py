@@ -1,6 +1,7 @@
 """Explicitly confirmed, serial greetings. Never retry a possibly sent message."""
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 from uuid import UUID
 
@@ -19,6 +20,22 @@ from app.services.discovery import DiscoveryService
 logger = logging.getLogger(__name__)
 ACTIVE = ('queued', 'running')
 DONE = ('sent', 'already')
+BEIJING_TIME = timezone(timedelta(hours=8))
+DAILY_GREETING_LIMIT = 200
+
+
+def daily_greeting_count(db, now: datetime | None = None) -> dict:
+    """Count confirmed sends across all jobs for the current Beijing day."""
+    day = (now or now_utc()).astimezone(BEIJING_TIME).date()
+    count = 0
+    for sent_at in db.scalars(select(Ledger.updated_at).where(Ledger.status == 'sent')):
+        if sent_at is None:
+            continue
+        # SQLite returns naive datetimes even for timezone-aware columns.
+        instant = sent_at if sent_at.tzinfo else sent_at.replace(tzinfo=timezone.utc)
+        if instant.astimezone(BEIJING_TIME).date() == day:
+            count += 1
+    return {'date': day.isoformat(), 'count': count, 'limit': DAILY_GREETING_LIMIT}
 
 
 class GreetingRequest(BaseModel):

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { chatDate, validateSince, walkChatHistory, beijingToday } from '../dist/toolset/chat-history.js';
+import { chatDate, validateSince, walkChatHistory, beijingToday, reachedDateCutoff } from '../dist/toolset/chat-history.js';
 
 assert.equal(chatDate('10月01日', '2026-10-26'), '2026-10-01');
 assert.equal(chatDate('昨天 13:45', '2026-10-26'), '2026-10-25');
@@ -14,10 +14,11 @@ assert.equal(beijingToday(new Date('2026-09-30T17:00:00Z')), '2026-10-01');
 assert.throws(() => validateSince('2026-02-30', '2026-10-26'));
 assert.throws(() => validateSince('2026-10-27', '2026-10-26'));
 
-function fixture({ virtual = false, stuck = false, sameName = false, clone = false, missingId = false, error = false } = {}) {
+function fixture({ virtual = false, stuck = false, sameName = false, clone = false, missingId = false, error = false, dates = false } = {}) {
   let clock = 1000, loaded = 10, pendingAt = 0;
   const all = Array.from({ length: 54 }, (_, i) => ({ sourceId: `chat-${i}`, name: `测试${i}`, job: `岗位${i % 3}`, time: i === 0 ? '2020-01-01' : i === 53 ? '2020-02-01' : '2021-10-01', message: '测试', unreadCount: 0 }));
   all[30].time = '未知';
+  if (dates) all.forEach((row, i) => { row.time = i === 0 ? '2020-01-01' : i <= 12 ? '2026-10-20' : '2026-09-29'; });
   if (sameName) { all[1].name = all[0].name; all[1].job = all[0].job; }
   if (clone) all[1] = { ...all[0] };
   if (missingId) all[1].sourceId = '';
@@ -38,6 +39,16 @@ function fixture({ virtual = false, stuck = false, sameName = false, clone = fal
   const page = { evaluate: script => Promise.resolve(vm.runInNewContext(script, context)) };
   return { page, options: { now: () => clock, pause: async () => { clock += 500; }, deadline: 120_000 }, all };
 }
+for (const virtual of [false, true]) {
+  const f = fixture({ virtual, dates: true });
+  const result = await walkChatHistory(f.page, { ...f.options, since: '2026-10-01' });
+  assert.equal(result.stop_reason, 'date_cutoff');
+  assert.ok(result.scanned < 54, 'date cutoff must stop before loading the whole history');
+  assert.equal(result.rows.length, 12, 'include recent chats, exclude old pinned and old tail');
+}
+assert.equal(reachedDateCutoff([
+  { time: '2020-01-01' }, { time: '2026-10-20' }, { time: '2026-09-29' },
+], '2026-10-01', '2026-10-28'), false, 'one old pinned or ordinary row cannot end the scan');
 for (const virtual of [false, true]) {
   const f = fixture({ virtual });
   const result = await walkChatHistory(f.page, { ...f.options, since: '2021-10-01' });

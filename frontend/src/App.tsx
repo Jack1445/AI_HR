@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Avatar, Badge, Button, ConfigProvider, Descriptions, Drawer, Empty, Input, Progress, Space, Spin, Tag, Tooltip, message } from "antd";
 import zhCN from "antd/locale/zh_CN";
-import { ArrowRightOutlined, CheckOutlined, ClockCircleOutlined, ReloadOutlined, SafetyOutlined, SearchOutlined, SyncOutlined, TeamOutlined } from "@ant-design/icons";
-import { confirmAction, createAction, fetchCandidateDetail, fetchDebugStatus, fetchHealth, fetchAllLocalCandidates, updateCandidateTags, fetchLocalJobs, fetchPolicy, matchCandidate, syncLocal, updateCandidate,
+import { ArrowRightOutlined, CheckOutlined, ClockCircleOutlined, DownloadOutlined, ReloadOutlined, SafetyOutlined, SearchOutlined, SyncOutlined, TeamOutlined } from "@ant-design/icons";
+import { confirmAction, createAction, downloadCommunicationAttachment, fetchCandidateDetail, fetchDebugStatus, fetchHealth, fetchAllLocalCandidates, updateCandidateTags, fetchLocalJobs, fetchPolicy, matchCandidate, syncLocal, stopSync, updateCandidate,
   type ActionResponse, type AgentPolicy, type CandidateDetail, type DebugStatus, type HealthResponse, type LocalCandidate, type LocalJob, type MatchResult } from "./api";
 import { DiagnosticsPanel, timingLabels } from "./components/DiagnosticsPanel";
 import { Recommendations } from './components/Recommendations';
@@ -29,8 +29,10 @@ function formatTime(value?: string | null) {
 
 function App() {
   const [messageApi, messageContext] = message.useMessage();
-  const [activePage, setActivePage] = useState<'communications' | 'recommendations' | 'ai'>('communications');
+  const [activePage, setActivePage] = useState<'communications' | 'recommendations' | 'ai'>('recommendations');
   const [manualBusy, setManualBusy] = useState(false);
+  const [attachmentProgress, setAttachmentProgress] = useState<{ completed: number; total: number; current: string } | null>(null);
+  const [attachmentResult, setAttachmentResult] = useState<{ saved: number; reused: number; folder: string; skipped: string[]; failed: string[] } | null>(null);
   const [recommendationActivity, setRecommendationActivity] = useState<RecommendationActivity | null>(null);
   const [syncSince, setSyncSince] = useState(() => localStorage.getItem('ai-hr.communication-since') ?? '');
   const [syncNotice, setSyncNotice] = useState('');
@@ -65,7 +67,10 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [refreshToken, setRefreshToken] = useState(0);
   const [syncMode, setSyncMode] = useState<"normal" | "diagnostic" | null>(null);
+  const [stopping, setStopping] = useState(false);
   const syncLock = useRef(false);
+  const syncAbortController = useRef<AbortController | null>(null);
+  const stopRequested = useRef(false);
   const [diagnosticLogPath, setDiagnosticLogPath] = useState<string | null>(null);
   const [debugStatus, setDebugStatus] = useState<DebugStatus | null>(null);
   const [debugLoading, setDebugLoading] = useState(false);
@@ -137,10 +142,10 @@ function App() {
     catch (reason) { messageApi.error(errorText(reason)); }
     finally { setDebugLoading(false); }
   };
-  const verifyAllCommunications = async (ids: string[]) => {
+  const verifyAllCommunications = async (ids: string[], signal?: AbortSignal) => {
     // The backend returns every in-range ID across all jobs, after recycle exclusions.
-    const people = await fetchAllLocalCandidates();
-    const result = await verifyCommunicationBatch(selectVerificationCandidates(people.candidates, ids), verifyCommunications, updated => {
+    const people = await fetchAllLocalCandidates({}, signal);
+    const result = await verifyCommunicationBatch(selectVerificationCandidates(people.candidates, ids), batch => verifyCommunications(batch, signal, true), updated => {
       setCandidates(rows => rows.map(row => updated.find(item => item.id === row.id) ?? row));
       setSelectedCandidate(current => {
         const update = updated.find(item => item.id === current?.id);
@@ -149,15 +154,27 @@ function App() {
     }, progress => {
       setVerificationProgress(progress);
       setSyncDebug(current => ({ ...current, phase: 'communication.verify.all', verification: progress }));
-    });
+    }, signal);
     setVerificationResult(result);
     setSyncDebug(current => ({ ...current, phase: result.failed ? 'communication.verify.partial' : 'communication.verify.complete', finished_at: new Date().toISOString(), verification: result }));
     return result;
+  };
+  const stopCurrentSync = async () => {
+    if (!busy || stopRequested.current) return;
+    stopRequested.current = true;
+    setStopping(true);
+    try { await stopSync(); }
+    catch (reason) { setSyncDebug(current => ({ ...current, stop_error: errorText(reason) })); }
+    finally { syncAbortController.current?.abort(); }
   };
   const runSync = async (diagnostic = false) => {
     if (syncLock.current || manualBusy) return;
     if (syncSince && syncSince > today) { messageApi.error('起始日期不能晚于今天'); return; }
     syncLock.current = true;
+    const controller = new AbortController();
+    syncAbortController.current = controller;
+    stopRequested.current = false;
+    setStopping(false);
     setSyncNotice('');
     setVerificationRange(syncSince ? `${syncSince} 至今（含当天）` : '全部历史');
     let synced = false;
@@ -166,11 +183,12 @@ function App() {
     setVerificationProgress(null); setVerificationResult(null);
     setSyncDebug({ phase: "sync.start", diagnostic, started_at: startedAt });
     try {
-      const result = await syncLocal("all", { diagnostic, since: syncSince || undefined });
+      const result = await syncLocal("all", { diagnostic, since: syncSince || undefined, signal: controller.signal });
       synced = true;
       const summary = result.history_summary;
       const notices = [
         summary?.scanned !== undefined ? `已遍历 ${summary.scanned} 个历史会话，本次范围内 ${summary.in_range} 人` : '',
+        summary?.stop_reason === 'date_cutoff' ? '已到达同步起始日期，提前停止向下滚动' : '',
         summary?.undated ? `${summary.undated} 人日期无法识别，已纳入核验` : '',
         summary?.unmatched ? `${summary.unmatched} 人的来源岗位无法匹配当前岗位，未入库，需检查来源岗位` : '',
         summary?.unidentified ? `${summary.unidentified} 组会话缺少 BOSS 编号，已跳过并继续其他人` : '',
@@ -181,18 +199,24 @@ function App() {
       setSyncPhase("verify"); setCandidateError(null);
       setSyncDebug({ phase: "communication.verify.all", started_at: startedAt, response: result });
       await loadOverview();
-      const verified = await verifyAllCommunications(result.verification_ids);
+      const verified = await verifyAllCommunications(result.verification_ids, controller.signal);
       // Re-read after all batches so a concurrent local render cannot retain old status.
       setRefreshToken(value => value + 1);
       if (verified.failed || summary?.unmatched || summary?.unidentified || summary?.ambiguous_legacy) messageApi.warning(`本次核验已处理 ${verified.total} 人，${verified.failed} 人失败；其他需确认项请查看同步提示`);
-      else messageApi.success(`本次范围更新完成，已核验 ${verified.total} 人：${verified.classified} 人已分类，${verified.unknown} 人待确认`);
+      else messageApi.success(`本次范围更新完成，已核验 ${verified.total} 人：${verified.classified} 人已分类，${verified.unknown} 人待确认，已点击同意附件简历 ${verified.consented} 人`);
     } catch (reason) {
       const text = errorText(reason);
+      if (stopRequested.current || controller.signal.aborted) {
+        setError(synced ? '已停止当前核验，已完成的批次已保存。' : '已停止当前同步，已完成的本地数据保持不变。');
+        setSyncDebug(current => ({ ...current, phase: 'communication.stopped', started_at: startedAt, stopped_at: new Date().toISOString() }));
+        await refreshDebug();
+        return;
+      }
       setError(synced ? `数据已同步保存，本次范围核验未完成：${text}。可点击“重新同步核验”重试。` : text);
       if (!synced) setDiagnosticLogPath(text.match(/诊断日志：(.+)$/)?.[1]?.trim() ?? null);
       setSyncDebug(current => ({ ...current, phase: synced ? "communication.verify.failed" : "sync.failed", started_at: startedAt, error: text }));
       await refreshDebug();
-    } finally { setSyncMode(null); setSyncPhase("sync"); syncLock.current = false; }
+    } finally { if (syncAbortController.current === controller) syncAbortController.current = null; setStopping(false); setSyncMode(null); setSyncPhase("sync"); syncLock.current = false; }
   };
 
   const closeDrawer = () => { detailRequest.current += 1; setDrawerOpen(false); setDetailBusy(false); };
@@ -256,6 +280,30 @@ function App() {
       }
     } catch (e) { throw new Error(`已保存 ${saved}/${ids.length} 人：${errorText(e)}`); }
   };
+  const downloadSelectedAttachments = async (selected: LocalCandidate[]) => {
+    if (!selectedJob || busy || manualBusy) return;
+    const eligible = selected.filter(row => row.communication_status === 'mutual');
+    const skipped = selected.filter(row => row.communication_status !== 'mutual').map(row => `${row.name}：尚未核验为双方已沟通`);
+    if (!eligible.length) { messageApi.warning('所选人选中没有双方已沟通的候选人'); return; }
+    if (eligible.length > 50) { messageApi.warning('一次最多下载 50 位候选人的附件'); return; }
+    const jobId = selectedJob.id;
+    setManualBusy(true); setAttachmentResult(null);
+    let saved = 0;
+    let reused = 0;
+    let folder = '';
+    const failed: string[] = [];
+    try {
+      for (const [index, person] of eligible.entries()) {
+        setAttachmentProgress({ completed: index, total: eligible.length, current: person.name });
+        try { const resume = await downloadCommunicationAttachment(person.id, jobId); saved += 1; folder = resume.saved_folder; if (resume.already_saved) reused += 1; }
+        catch (reason) { failed.push(`${person.name}：${errorText(reason)}`); }
+        setAttachmentProgress({ completed: index + 1, total: eligible.length, current: person.name });
+      }
+      setAttachmentResult({ saved, reused, folder, skipped, failed });
+      if (saved) messageApi.success(`已保存 ${saved} 份附件简历到岗位文件夹（${reused} 份直接使用已有文件）`);
+      else messageApi.warning('所选人选没有成功下载的附件简历，请查看失败明细');
+    } finally { setAttachmentProgress(null); setManualBusy(false); }
+  };
   const healthy = health?.status === "ok";
   const lastSync = debugStatus?.latest_sync;
   const syncLabel = lastSync?.status === "success" ? `最近同步 ${formatTime(lastSync.finished_at)}` : lastSync?.status === "running" ? "同步进行中" : lastSync?.status === "failed" ? "最近同步未完成" : "尚未同步";
@@ -267,13 +315,15 @@ function App() {
         <div className="header-status"><Tooltip title={health ? `后端 v${health.version}` : "连接状态"}><span role="status" className="connection-status"><span className={`status-dot ${healthy ? "is-online" : healthFailed ? "is-offline" : "is-pending"}`} />{healthy ? "服务正常" : healthFailed ? "连接异常" : "连接中"}</span></Tooltip><span className="header-separator" /><Tooltip title="所有外部写入操作均需人工确认"><span className={`policy-status ${policy?.writes_enabled ? "writes-enabled" : ""}`}><SafetyOutlined /> {policy ? policy.writes_enabled ? "外部写入已开启" : "手动操作需确认" : "权限检查中"}</span></Tooltip></div>
       </header>
       <main className="app-content">
-        <nav className="workspace-navigation" aria-label="工作区"><button aria-pressed={activePage === 'communications'} onClick={() => setActivePage('communications')}>沟通候选人</button><button aria-pressed={activePage === 'recommendations'} onClick={() => setActivePage('recommendations')}>推荐牛人</button><button aria-pressed={activePage === 'ai'} onClick={() => setActivePage('ai')}>AI 管理</button></nav>
+        <nav className="workspace-navigation" aria-label="工作区"><button aria-pressed={activePage === 'recommendations'} onClick={() => setActivePage('recommendations')}>推荐牛人</button><button aria-pressed={activePage === 'communications'} onClick={() => { if (activePage !== 'communications') setRefreshToken(value => value + 1); setActivePage('communications'); }}>沟通候选人</button><button aria-pressed={activePage === 'ai'} onClick={() => setActivePage('ai')}>AI 管理</button></nav>
         <AIManagement active={activePage === 'ai'} onOpen={() => setActivePage('ai')} />
         <div className="page-alerts">
           {error && <Alert closable onClose={() => setError(null)} message={error} type="warning" showIcon />}
-          {busy && syncPhase === "sync" && <Alert type="info" showIcon icon={<SyncOutlined spin />} message={activeStage ? `${timingLabels[activeStage.stage] ?? activeStage.stage} · ${activeStage.elapsed_seconds.toFixed(1)} 秒` : "正在同步岗位与候选人…"} />}
-          {(syncPhase === 'verify' && busy) && <Alert type="info" showIcon icon={<SyncOutlined spin />} message={verificationProgress ? `正在核验日期范围内候选人 · ${verificationProgress.completed} / ${verificationProgress.total} 人` : '正在读取所有岗位的沟通候选人…'} description={<><Progress size="small" percent={verificationProgress?.total ? Math.round(verificationProgress.completed / verificationProgress.total * 100) : 0} showInfo={false} /><span>不受岗位、筛选和分页限制 · 已核验 {verificationProgress?.verified ?? 0} 人 · 失败 {verificationProgress?.failed ?? 0} 人</span></>} />}
-          {!busy && verificationResult && <Alert showIcon type={verificationResult.failed || verificationResult.unknown ? 'warning' : 'success'} message={`范围核验（${verificationRange}）：共 ${verificationResult.total} 人，已核验 ${verificationResult.verified} 人 · 已分类 ${verificationResult.classified} 人 · 待确认 ${verificationResult.unknown} 人 · 失败 ${verificationResult.failed} 人`} description={verificationResult.failures.length ? <details><summary>查看失败明细（可点击“重新同步核验”重试）</summary>{verificationResult.failures.map((failure, index) => <p key={index}>{failure.names.join('、')}：{failure.error}</p>)}</details> : undefined} />}
+          {busy && syncPhase === "sync" && <Alert type="info" showIcon icon={<SyncOutlined spin />} message={<Space><span>{activeStage ? `${timingLabels[activeStage.stage] ?? activeStage.stage} · ${activeStage.elapsed_seconds.toFixed(1)} 秒` : "正在同步岗位与候选人…"}</span><Button danger size="small" onClick={() => void stopCurrentSync()} disabled={stopping}>{stopping ? '正在停止…' : '停止'}</Button></Space>} />}
+          {(syncPhase === 'verify' && busy) && <Alert type="info" showIcon icon={<SyncOutlined spin />} message={verificationProgress ? `正在核验已保留的推荐人选 · ${verificationProgress.completed} / ${verificationProgress.total} 人` : '正在读取已保留推荐人选的沟通记录…'} description={<><Progress size="small" percent={verificationProgress?.total ? Math.round(verificationProgress.completed / verificationProgress.total * 100) : 0} showInfo={false} /><div className="sync-progress-detail"><span>不受岗位、筛选和分页限制 · 已核验 {verificationProgress?.verified ?? 0} 人 · 失败 {verificationProgress?.failed ?? 0} 人</span><Button danger size="small" onClick={() => void stopCurrentSync()} disabled={stopping}>{stopping ? '正在停止…' : '停止'}</Button></div></>} />}
+          {attachmentProgress && <Alert type="info" showIcon icon={<DownloadOutlined />} message={`正在下载附件简历 · ${attachmentProgress.completed}/${attachmentProgress.total} 人 · 当前：${attachmentProgress.current}`} description={<Progress size="small" showInfo={false} percent={Math.round(attachmentProgress.completed / attachmentProgress.total * 100)} />} />}
+          {attachmentResult && <Alert closable onClose={() => setAttachmentResult(null)} showIcon type={attachmentResult.failed.length ? 'warning' : 'success'} message={`附件简历：已保存 ${attachmentResult.saved} 份（已有 ${attachmentResult.reused} 份）${attachmentResult.skipped.length ? ` · 跳过 ${attachmentResult.skipped.length} 人` : ''}${attachmentResult.failed.length ? ` · 失败 ${attachmentResult.failed.length} 人` : ''}`} description={<>{attachmentResult.folder && <div>本地岗位文件夹：<code>{attachmentResult.folder}</code></div>}{(attachmentResult.failed.length > 0 || attachmentResult.skipped.length > 0) && <details><summary>查看处理明细</summary>{[...attachmentResult.skipped, ...attachmentResult.failed].map((item, index) => <p key={index}>{item}</p>)}</details>}</>} />}
+          {!busy && verificationResult && <Alert showIcon type={verificationResult.failed || verificationResult.unknown ? 'warning' : 'success'} message={`范围核验（${verificationRange}）：共 ${verificationResult.total} 人，已核验 ${verificationResult.verified} 人 · 已分类 ${verificationResult.classified} 人 · 点击同意附件简历 ${verificationResult.consented} 人 · 待确认 ${verificationResult.unknown} 人 · 失败 ${verificationResult.failed} 人`} description={verificationResult.failures.length ? <details><summary>查看失败明细（可点击“重新同步核验”重试）</summary>{verificationResult.failures.map((failure, index) => <p key={index}>{failure.names.join('、')}：{failure.error}</p>)}</details> : undefined} />}
         </div>
         {activePage !== 'recommendations' && recommendationActivity && <div className="workspace-task-progress" role="status" aria-live="polite"><div className="workspace-task-heading"><strong>{recommendationActivity.kind === 'greet' ? recommendationActivity.running ? '推荐牛人 · 正在打招呼' : '推荐牛人 · 打招呼结果' : recommendationActivity.running ? recommendationActivity.progress ? '推荐牛人 · 正在读取在线简历' : '推荐牛人 · 正在查重并寻找新人' : recommendationActivity.error ? '推荐牛人 · 读取结束，有失败项' : '推荐牛人 · 读取完成'}</strong><Button size="small" type="link" onClick={() => setActivePage('recommendations')}>查看任务</Button></div><div className="muted">{recommendationActivity.job}</div>{recommendationActivity.progress && <><Progress size="small" percent={recommendationActivity.progress.total ? Math.round(recommendationActivity.progress.completed / recommendationActivity.progress.total * 100) : 100} status={recommendationActivity.running ? 'active' : recommendationActivity.progress.failed ? 'normal' : 'success'} showInfo={false} /><span>已处理 {recommendationActivity.progress.completed}/{recommendationActivity.progress.total} 人 · {recommendationActivity.kind === 'greet' ? '已发送或已招呼' : '截图成功'} {recommendationActivity.progress.completed - recommendationActivity.progress.failed} 人 · {recommendationActivity.kind === 'greet' ? '其他结果' : '失败'} {recommendationActivity.progress.failed} 人{recommendationActivity.progress.currentName ? ` · 当前：${recommendationActivity.progress.currentName}` : ''}</span></>}{!recommendationActivity.progress && <span>{recommendationActivity.running ? '任务继续进行中，完成的截图会保存到本地。' : recommendationActivity.error ? '读取未完成，请返回推荐牛人查看错误明细。' : '本次没有新增人选。'}</span>}</div>}
         <div hidden={activePage !== 'communications'}>
@@ -297,16 +347,16 @@ function App() {
 
             {selectedJob && <div className="communication-controls">
               <div className="communication-tabs" role="group" aria-label="沟通状态筛选">{(Object.keys(communicationLabels) as CommunicationFilter[]).map(key => <button key={key} disabled={busy || manualBusy} aria-pressed={communicationFilter === key} onClick={() => { setCommunicationFilter(key); }}>{communicationLabels[key]} <span>{communicationCounts[key]}</span></button>)}</div>
-              <div className="communication-help"><span>双方已沟通后可申请附件简历，仍需对方提供。待核验人员不计入三类。</span><Tooltip title="按上方日期重新同步所有岗位的会话并核验，不受当前表格筛选限制"><Button size="small" loading={busy} disabled={busy || manualBusy} onClick={() => void runSync()}>重新同步核验</Button></Tooltip></div>
-              <div className="communication-read-note"><span>同步会自动加载历史，并核验所选日期至今的全部岗位会话；本地历史仍全部展示。打开会话可能将消息标为已读。</span><CommunicationRecycleBin disabled={busy || manualBusy} /></div>
+              <div className="communication-help"><span>双方已沟通后可申请附件简历，仍需对方提供。待核验人员不计入三类。</span><Tooltip title="按上方日期同步已保留推荐人选的会话并核验，不受当前表格筛选限制"><Button size="small" loading={busy} disabled={busy || manualBusy} onClick={() => void runSync()}>重新同步核验</Button></Tooltip></div>
+              <div className="communication-read-note"><span>仅同步并核验推荐牛人库中仍保留、显示“已打招呼：是”且能唯一匹配的人选；发现对方待处理的附件简历请求会自动点击“同意”。BOSS 会话列表仍需遍历所选日期范围；打开会话可能将消息标为已读。</span><CommunicationRecycleBin disabled={busy || manualBusy} /></div>
             </div>}
             {candidateError && <Alert type="warning" showIcon message={candidateError} action={<Button size="small" onClick={() => setRefreshToken((value) => value + 1)}>重试</Button>} />}
-            {!selectedJob ? <div className="candidate-empty"><TeamOutlined /><h3>{jobs.length ? "没有符合筛选条件的岗位" : "从同步第一个岗位开始"}</h3><p>{jobs.length ? "调整左侧筛选条件，即可查看对应候选人。" : "点击上方同步按钮，读取你的岗位与候选人。"}</p></div> : <ManagedTable<LocalCandidate> scope="communications" showAll rows={filteredCandidates} fields={managedFields} loading={candidateLoading || candidateLoadedToken !== refreshToken} busy={busy || manualBusy} contextKey={`${selectedJob.id}:${communicationFilter}`} onLocalSave={saveLocalCells} onDeleted={ids => { setCandidates(items => items.filter(i => !ids.includes(i.id))); setCandidateTotal(count => count - ids.length); if (selectedCandidate && ids.includes(selectedCandidate.id)) closeDrawer(); }} emptyText="该岗位暂无此类沟通候选人" />}
+            {!selectedJob ? <div className="candidate-empty"><TeamOutlined /><h3>{jobs.length ? "没有符合筛选条件的岗位" : "从同步第一个岗位开始"}</h3><p>{jobs.length ? "调整左侧筛选条件，即可查看对应候选人。" : "点击上方同步按钮，读取你的岗位与候选人。"}</p></div> : <ManagedTable<LocalCandidate> scope="communications" showAll rows={filteredCandidates} fields={managedFields} loading={candidateLoading || candidateLoadedToken !== refreshToken} busy={busy || manualBusy} contextKey={`${selectedJob.id}:${communicationFilter}`} onLocalSave={saveLocalCells} onDeleted={ids => { setCandidates(items => items.filter(i => !ids.includes(i.id))); setCandidateTotal(count => count - ids.length); if (selectedCandidate && ids.includes(selectedCandidate.id)) closeDrawer(); }} selectionActions={(rows, locked) => <Tooltip title="仅下载双方已沟通且对方已提供的 PDF 附件；按岗位保存到本地文件夹"><Button size="small" icon={<DownloadOutlined />} disabled={locked || !rows.some(row => row.communication_status === 'mutual')} onClick={() => void downloadSelectedAttachments(rows)}>下载附件简历</Button></Tooltip>} emptyText="该岗位暂无此类沟通候选人" />}
             <div className="candidate-footnote"><CheckOutlined /> 本地标注会保留，不会被后续同步覆盖</div>
           </section>
         </div>
         </div>
-        <div hidden={activePage !== 'recommendations'}><Recommendations busy={busy || manualBusy} setBusy={setManualBusy} onActivity={setRecommendationActivity} /></div>
+        <div hidden={activePage !== 'recommendations'}><Recommendations active={activePage === 'recommendations'} busy={busy || manualBusy} setBusy={setManualBusy} onActivity={setRecommendationActivity} /></div>
         <DiagnosticsPanel status={debugStatus} health={health} loading={debugLoading} busy={busy || manualBusy} diagnosing={syncMode === "diagnostic"} logPath={diagnosticLogPath} sync={syncDebug} onRefresh={() => void refreshDebug()} onDiagnose={() => void runSync(true)} />
         <footer className="app-footer"><span>AI Recruiter · 让招聘更有序</span><span><SafetyOutlined /> 外部操作需人工确认 · 匹配建议仅供参考</span></footer>
       </main>

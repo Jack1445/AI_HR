@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -81,6 +82,21 @@ def test_only_selected_and_same_name_safe(store):
     assert boss.calls[0][2] == 'geek-1'
     assert boss.calls[0][6] == '21岁 / 本科'
     assert len(boss.calls) == 1
+
+
+def test_daily_count_uses_beijing_day_and_confirmed_sends_only(store):
+    factory, _, _ = store
+    with factory() as db:
+        db.add_all([
+            Ledger(id='previous-day', batch_id='test', status='sent', updated_at=datetime(2026, 10, 28, 15, 59, tzinfo=timezone.utc)),
+            Ledger(id='today-1', batch_id='test', status='sent', updated_at=datetime(2026, 10, 28, 16, 0, tzinfo=timezone.utc)),
+            Ledger(id='today-2', batch_id='test', status='sent', updated_at=datetime(2026, 10, 29, 0, 0, tzinfo=timezone.utc)),
+            Ledger(id='already', batch_id='test', status='already', updated_at=datetime(2026, 10, 29, 0, 1, tzinfo=timezone.utc)),
+            Ledger(id='unknown', batch_id='test', status='unknown', updated_at=datetime(2026, 10, 29, 0, 2, tzinfo=timezone.utc)),
+        ])
+        db.commit()
+        assert greet.daily_greeting_count(db, datetime(2026, 10, 29, 3, 0, tzinfo=timezone.utc)) == {'date': '2026-10-29', 'count': 2, 'limit': 200}
+        assert greet.daily_greeting_count(db, datetime(2026, 10, 29, 16, 0, tzinfo=timezone.utc)) == {'date': '2026-10-30', 'count': 0, 'limit': 200}
 
 
 def test_idempotent_request_and_cross_batch_no_duplicate(store):

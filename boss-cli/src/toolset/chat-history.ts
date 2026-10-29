@@ -117,6 +117,19 @@ export function mergeChatRows(rows: Map<string, ChatRow>, unidentified: Set<stri
   }
 }
 
+// BOSS keeps pinned chats at the top, then orders ordinary chats by recent
+// activity. A single old pinned chat must not end a date-scoped scan.
+export function reachedDateCutoff(rows: ChatRow[], since: string, today: string): boolean {
+  let inRangeSeen = false, olderRun = 0;
+  for (const row of rows) {
+    const date = chatDate(row.time, today);
+    if (!date) { olderRun = 0; continue; }
+    if (date >= since) { inRangeSeen = true; olderRun = 0; }
+    else if (inRangeSeen) olderRun += 1;
+  }
+  return olderRun >= 8;
+}
+
 export async function walkChatHistory(page: Page, options: WalkOptions = {}) {
   const now = options.now ?? Date.now;
   const deadline = options.deadline ?? now() + 600_000;
@@ -128,13 +141,23 @@ export async function walkChatHistory(page: Page, options: WalkOptions = {}) {
   let last = '', bottomSince = 0, steps = 0;
   await page.evaluate(historyScript('top'));
   await pause();
-  // Scan to the bottom even with a date selected: pinned chats and non-monotonic
-  // ordering mean one old row cannot prove that every following row is older.
+  const finish = (stop_reason: 'stable_bottom' | 'date_cutoff') => {
+    const all = [...rows.values()];
+    const legacyCounts = new Map<string, number>();
+    const legacyKey = (r: ChatRow) => JSON.stringify([r.name.toLowerCase(), r.job.toLowerCase()]);
+    for (const row of all) legacyCounts.set(legacyKey(row), (legacyCounts.get(legacyKey(row)) ?? 0) + 1);
+    const selected = all.filter(r => !options.since || !chatDate(r.time, today) || chatDate(r.time, today)! >= options.since)
+      .map(row => ({ ...row, legacyMatchUnique: legacyCounts.get(legacyKey(row)) === 1 && !unidentified.has(legacyKey(row)) }));
+    return { rows: selected, scanned: all.length, undated: selected.filter(r => !chatDate(r.time, today)).length, unidentified: unidentified.size, stop_reason };
+  };
   while (now() < deadline && steps < 2000) {
     const snapshot = await page.evaluate(historyScript()) as Snapshot;
     if (snapshot.error) throw new Error(`沟通历史读取中止：${snapshot.error}`);
     mergeChatRows(rows, unidentified, snapshot.rows);
     if (options.target && snapshot.rows.some(r => r.sourceId === options.target!.sourceId)) return { rows: [...rows.values()], scanned: rows.size, undated: 0, unidentified: unidentified.size, stop_reason: 'target_found' };
+    if (!options.target && options.since && !snapshot.loading && reachedDateCutoff([...rows.values()], options.since, today)) {
+      return finish('date_cutoff');
+    }
     const signature = JSON.stringify([snapshot.top, snapshot.height, snapshot.rows.map(r => [r.sourceId, r.time])]);
     const bottom = snapshot.top + snapshot.viewport >= snapshot.height - 2;
     if (bottom && !snapshot.loading && signature === last) {
@@ -142,13 +165,7 @@ export async function walkChatHistory(page: Page, options: WalkOptions = {}) {
       // Ten quiet seconds at the bottom accommodates delayed lazy loading.
       if (now() - bottomSince >= 10_000) {
         if (options.target) throw new Error('已遍历沟通列表，未找到对应 BOSS 会话编号');
-        const all = [...rows.values()];
-        const legacyCounts = new Map<string, number>();
-        const legacyKey = (r: ChatRow) => JSON.stringify([r.name.toLowerCase(), r.job.toLowerCase()]);
-        for (const row of all) legacyCounts.set(legacyKey(row), (legacyCounts.get(legacyKey(row)) ?? 0) + 1);
-        const selected = all.filter(r => !options.since || !chatDate(r.time, today) || chatDate(r.time, today)! >= options.since)
-          .map(row => ({ ...row, legacyMatchUnique: legacyCounts.get(legacyKey(row)) === 1 && !unidentified.has(legacyKey(row)) }));
-        return { rows: selected, scanned: all.length, undated: selected.filter(r => !chatDate(r.time, today)).length, unidentified: unidentified.size, stop_reason: 'stable_bottom' };
+        return finish('stable_bottom');
       }
     } else bottomSince = 0;
     last = signature;
