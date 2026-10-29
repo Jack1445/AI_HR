@@ -17,8 +17,9 @@ from app.core.ai_secrets import protect, reveal
 from app.core.config import Settings
 from app.core.json_utils import dumps, loads
 from app.db.base import Base
-from app.db.models import (AIConnectionRecord, AIManagedRunRecord, CandidateRecord, CommunicationRecycleRecord,
-    JobCandidateRecord, JobRecord, RecommendedCandidateRecord, RecommendedResumeRecord, TableCellRecord, TableWorkspaceRecord)
+from app.db.models import (AIConnectionRecord, AIJobPromptRecord, AIManagedRunRecord, CandidateRecord, CommunicationRecycleRecord,
+    JobCandidateRecord, JobRecord, RecommendedCandidateRecord, RecommendationHiddenRecord, RecommendationJobRecord,
+    RecommendedResumeRecord, TableCellRecord, TableWorkspaceRecord)
 from app.db.session import get_db
 from app.schemas.ai import AIConfig, AIConfigSave, AISelection
 from app.services import ai_management as ai
@@ -53,6 +54,94 @@ def configured(db):
     svc = ai.AIManagementService(db)
     svc.save_config(AIConfigSave(base_url='http://localhost:1234/v1', model='mock-model', prompt='按我的要求，用证据分析'))
     return svc
+
+
+def test_recommendation_result_uses_latest_success_and_strict_first_line(store):
+    db, _, _ = store
+    people(db)
+    old = AIManagedRunRecord(id='old', status='success', config_json=dumps({'model': 'old-model'}),
+        selection_json=dumps({'source': 'recommendations'}), items_json=dumps([
+            {'candidate_id': 'person-0', 'status': 'success', 'output': '★★★★★\n旧结果'}]))
+    recent = AIManagedRunRecord(id='recent', status='success', config_json=dumps({'model': 'new-model'}),
+        selection_json=dumps({'source': 'recommendations'}), items_json=dumps([
+            {'candidate_id': 'person-0', 'status': 'success', 'output': '★★★★\n新结果'},
+            {'candidate_id': 'person-1', 'status': 'success', 'output': '推荐：★★★★★\n格式错误'},
+            {'candidate_id': 'person-2', 'status': 'success', 'output': '★★★\n其他岗位'},
+            {'candidate_id': 'person-3', 'status': 'success', 'output': '★★\n已删除'}]))
+    old.created_at = datetime(2026, 10, 27, tzinfo=timezone.utc)
+    recent.created_at = datetime(2026, 10, 29, tzinfo=timezone.utc)
+    db.add_all([old, recent, RecommendationHiddenRecord(candidate_id='person-1')])
+    db.commit()
+    results = ai.AIManagementService(db).recommendation_results(DiscoveryService.job_key('技术岗位'))
+    assert [(r['candidate_id'], r['stars'], r['output']) for r in results] == [('person-0', 4, '★★★★\n新结果')]
+    assert ai.AIManagementService.stars_from_output('推荐：★★★★★') == 0
+    assert ai.AIManagementService.stars_from_output('⭐️⭐️⭐️\n详情') == 3
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_db] = lambda: db
+    with TestClient(app) as client:
+        summary = client.get('/api/ai/recommendation-results', params={'job_id': DiscoveryService.job_key('技术岗位')})
+        assert summary.status_code == 200
+        assert summary.json()[0]['stars'] == 4
+        assert 'output' not in summary.json()[0]
+        detail = client.get('/api/ai/recommendation-results/person-0', params={'job_id': DiscoveryService.job_key('技术岗位')})
+        assert detail.json()['output'] == '★★★★\n新结果'
+        assert client.get('/api/ai/recommendation-results/person-2', params={'job_id': DiscoveryService.job_key('技术岗位')}).status_code == 404
+
+
+def test_job_prompts_are_separate_and_frozen_into_each_recommendation_run(store):
+    db, _, _ = store
+    people(db)
+    first = DiscoveryService.job_key('技术岗位')
+    second = DiscoveryService.job_key('其他岗位')
+    db.add_all([RecommendationJobRecord(id=first, label='技术岗位'), RecommendationJobRecord(id=second, label='其他岗位')])
+    db.commit()
+    svc = configured(db)
+    assert not svc.job_prompt(first)['custom']
+    assert svc.job_prompt(first)['prompt'] == ''
+    svc.save_job_prompt(first, '只分析技术岗位', '技术岗位 JD')
+    assert svc.job_prompt(first)['custom']
+    assert svc.job_prompt(first)['jd'] == '技术岗位 JD'
+    db.get(RecommendationJobRecord, first).available = False
+    db.commit()
+    assert svc.job_prompt(first)['prompt'] == '只分析技术岗位'
+    assert svc.job_prompt(first)['jd'] == '技术岗位 JD'
+    db.get(RecommendationJobRecord, first).available = True
+    db.commit()
+    assert svc.job_prompt(second)['prompt'] == ''
+    assert svc.config()[0].prompt == '按我的要求，用证据分析'
+    run, config, _ = svc.create_run(selection(job_id=first))
+    assert config.prompt == '通用提示词：\n按我的要求，用证据分析\n\n岗位 JD：\n技术岗位 JD\n\n岗位打分标准：\n只分析技术岗位'
+    assert loads(run.config_json, {})['prompt'] == config.prompt
+    svc.save_job_prompt(first, '新版本技术岗位提示词')
+    assert loads(db.get(AIManagedRunRecord, run.id).config_json, {})['prompt'] == config.prompt
+    run.status = 'success'
+    db.commit()
+    _, other_config, _ = svc.create_run(selection(ids=['person-2'], job_id=second))
+    assert other_config.prompt == '通用提示词：\n按我的要求，用证据分析'
+    assert svc.clear_job_prompt(first)['prompt'] == ''
+    assert svc.job_prompt(first)['jd'] == '技术岗位 JD'
+    assert db.get(AIJobPromptRecord, first) is None
+
+
+def test_job_prompt_api_persists_and_rejects_unknown_job(store):
+    db, _, _ = store
+    key = DiscoveryService.job_key('运营岗位')
+    db.add(RecommendationJobRecord(id=key, label='运营岗位'))
+    db.commit()
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_db] = lambda: db
+    with TestClient(app) as client:
+        assert client.get(f'/api/ai/prompts/{key}').json()['custom'] is False
+        saved = client.put(f'/api/ai/prompts/{key}', json={'prompt': '  运营岗位专属要求  '})
+        assert saved.status_code == 200
+        assert saved.json()['prompt'] == '运营岗位专属要求'
+        assert client.put(f'/api/ai/prompts/{key}', json={'jd': '岗位要求'}).json()['jd'] == '岗位要求'
+        assert client.get(f'/api/ai/prompts/{key}').json()['custom'] is True
+        assert client.put(f'/api/ai/prompts/{key}', json={'prompt': '   '}).status_code == 422
+        assert client.get('/api/ai/prompts/missing').status_code == 404
+        assert client.delete(f'/api/ai/prompts/{key}').json()['custom'] is False
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows DPAPI')

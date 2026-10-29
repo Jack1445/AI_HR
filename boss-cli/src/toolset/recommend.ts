@@ -1,5 +1,4 @@
 import type { Frame, Page } from 'puppeteer-core';
-import { TimeoutError } from 'puppeteer-core';
 import { readFile } from 'node:fs/promises';
 import {
   JOB_SEARCH_ACTION_GAP_MS,
@@ -26,6 +25,38 @@ export type RecommendCandidate = {
   /** 卡片为灰色「已看过」样式（如 `.candidate-card-wrap.has-viewed` / `.card-inner.has-viewed`） */
   hasViewed: boolean;
 };
+type ReadCondition = { field: 'name' | 'baseInfo' | 'expect' | 'salary' | 'highlights'; op: 'contains' | 'not_contains' | 'eq' | 'neq' | 'empty' | 'not_empty'; value: string };
+export type ReadConditions = { groups: Array<{ filters: ReadCondition[]; conjunction: 'and' | 'or' }>; conjunction: 'and' | 'or' };
+
+export function matchesRecommendationConditions(person: RecommendCandidate, conditions: ReadConditions): boolean {
+  if (!conditions.groups.length) return true;
+  const match = (rule: ReadCondition): boolean => {
+    const value = person[rule.field];
+    const items = (Array.isArray(value) ? value : [value]).map(text => text.toLocaleLowerCase());
+    const needle = rule.value.toLocaleLowerCase();
+    const empty = items.length === 0 || items.every(text => !text);
+    if (rule.op === 'empty') return empty;
+    if (rule.op === 'not_empty') return !empty;
+    if (rule.op === 'contains') return items.some(text => text.includes(needle));
+    if (rule.op === 'not_contains') return items.every(text => !text.includes(needle));
+    if (rule.op === 'eq') return items.some(text => text === needle);
+    return items.every(text => text !== needle);
+  };
+  const groupResults = conditions.groups.map(group => group.conjunction === 'and' ? group.filters.every(match) : group.filters.some(match));
+  return conditions.conjunction === 'and' ? groupResults.every(Boolean) : groupResults.some(Boolean);
+}
+
+function parseReadConditions(input: unknown): ReadConditions {
+  const fields = ['name', 'baseInfo', 'expect', 'salary', 'highlights'];
+  const ops = ['contains', 'not_contains', 'eq', 'neq', 'empty', 'not_empty'];
+  const object = input as ReadConditions;
+  if (!object || !Array.isArray(object.groups) || object.groups.length > 10 || !['and', 'or'].includes(object.conjunction) || object.groups.some(group =>
+    !group || !Array.isArray(group.filters) || !group.filters.length || group.filters.length > 10 || !['and', 'or'].includes(group.conjunction) || group.filters.some(rule =>
+      !rule || !fields.includes(rule.field) || !ops.includes(rule.op) || typeof rule.value !== 'string' || rule.value.length > 100 || (!['empty', 'not_empty'].includes(rule.op) && !rule.value.trim())))) {
+    throw new Error('读取条件格式无效：检查字段、组合方式及非空筛选值');
+  }
+  return object;
+}
 /** 会话内记录：通过 greet 新出现的推荐卡片（以 geekId 识别） */
 const sessionGreetProducedGeekIds = new Set<string>();
 
@@ -578,15 +609,26 @@ export async function openRecommendResumePreview(frame: Frame, target: string): 
   return opened;
 }
 
-export async function collectNewRecommendations(frame: Frame, limit: number, excluded: Array<{ name: string; baseInfo: string }>): Promise<{ candidates: RecommendCandidate[]; stop_reason: string }> {
+export async function collectNewRecommendations(page: Page, frame: Frame, limit: number, excluded: Array<{ name: string; baseInfo: string }>, conditions?: ReadConditions): Promise<{ candidates: RecommendCandidate[]; stop_reason: string }> {
   const collected: RecommendCandidate[] = [];
+  const filteredRead = Boolean(conditions?.groups.length);
+  const identity = (person: { name: string; baseInfo: string }) => JSON.stringify([person.name.replace(/\s+/g, ' ').trim(), person.baseInfo.replace(/\s+/g, ' ').trim()]);
+  const excludedKeys = new Set(excluded.map(identity));
+  let firstRows: RecommendCandidate[] = [];
   let stale = 0;
   let previousSignature = '';
-  // Bound each user-triggered search. Never run an open-ended crawl.
-  for (let pass = 0; pass <= 15; pass++) {
-    const next = await readRecommendList(frame, limit - collected.length, [...excluded, ...collected]);
+  // Bound each user-triggered search within the backend's 120-second deadline.
+  const maxPass = 50;
+  for (let pass = 0; pass <= maxPass; pass++) {
+    if (!filteredRead) {
+      firstRows = await readRecommendList(frame, limit);
+      if (firstRows.length >= limit) return { candidates: firstRows.filter(person => !excludedKeys.has(identity(person))), stop_reason: 'limit' };
+    }
+    const next = filteredRead
+      ? (await readRecommendList(frame, undefined, [...excluded, ...collected])).filter(person => matchesRecommendationConditions(person, conditions!)).slice(0, limit - collected.length)
+      : [];
     collected.push(...next);
-    if (collected.length >= limit) return { candidates: collected, stop_reason: 'limit' };
+    if (filteredRead && collected.length >= limit) return { candidates: collected, stop_reason: 'limit' };
     const signature = await frame.evaluate(`(() => {
       const nodes = Array.from(document.querySelectorAll(${JSON.stringify(RECOMMEND_CARD_ROOT_SELECTOR)}));
       return JSON.stringify(nodes.map(el => {
@@ -596,45 +638,21 @@ export async function collectNewRecommendations(frame: Frame, limit: number, exc
     })()`) as string;
     stale = signature === previousSignature ? stale + 1 : 0;
     previousSignature = signature;
-    if (stale >= 3) return { candidates: collected, stop_reason: 'no_more' };
-    if (pass === 15) break;
-    await frame.evaluate(`(() => {
-      const cards = document.querySelectorAll(${JSON.stringify(RECOMMEND_CARD_ROOT_SELECTOR)});
-      const last = cards[cards.length - 1];
-      if (last) last.scrollIntoView({block: 'end'});
-      let parent = last?.parentElement;
-      while (parent) {
-        const style = getComputedStyle(parent);
-        if (/(auto|scroll)/.test(style.overflowY) && parent.scrollHeight > parent.clientHeight) {
-          parent.scrollTop = parent.scrollHeight;
-          parent.dispatchEvent(new Event('scroll'));
-          return;
-        }
-        parent = parent.parentElement;
-      }
-      window.scrollTo(0, document.documentElement.scrollHeight);
-    })()`);
-    // BOSS appends cards on scroll. Wait for a changed list, rather than
-    // assuming a fixed short sleep is enough on a slow connection.
-    try {
-      await frame.waitForFunction(`((previous) => {
-        const nodes = Array.from(document.querySelectorAll(${JSON.stringify(RECOMMEND_CARD_ROOT_SELECTOR)}));
-        const current = JSON.stringify(nodes.map(el => {
-          const inner = el.querySelector('.card-inner') || el;
-          return [inner.getAttribute('data-geekid') || inner.getAttribute('data-geek') || '', el.querySelector('.name')?.textContent || ''];
-        }));
-        return current !== previous;
-      })`, { timeout: 5000, polling: 200 }, signature);
-    } catch (error) {
-      // A full bounded wait with no new cards counts toward the explicit
-      // three-round end condition. Other browser errors must surface.
-      if (!(error instanceof TimeoutError)) throw error;
-    }
+    if (stale >= 3) return { candidates: filteredRead ? collected : firstRows.filter(person => !excludedKeys.has(identity(person))), stop_reason: 'no_more' };
+    if (pass === maxPass) break;
+    const frameElement = await frame.frameElement();
+    const frameBox = await frameElement?.boundingBox();
+    if (!frameBox) throw new Error('推荐页面不可见，无法继续向下滚动');
+    const scrollHeight = await frame.evaluate('document.scrollingElement?.scrollHeight ?? 0') as number;
+    await page.mouse.move(frameBox.x + frameBox.width / 2, frameBox.y + frameBox.height / 2);
+    await page.mouse.wheel({ deltaY: scrollHeight });
+    // BOSS loads the next cards after the wheel reaches the bottom.
+    await new Promise(resolve => setTimeout(resolve, 1500));
   }
-  return { candidates: collected, stop_reason: 'scan_limit' };
+  return { candidates: filteredRead ? collected : firstRows.filter(person => !excludedKeys.has(identity(person))), stop_reason: 'scan_limit' };
 }
 
-export async function runRecommend(jobKeyword?: string, options: { limit?: number; json?: boolean; excludeFile?: string; jobLabel?: string } = {}): Promise<string> {
+export async function runRecommend(jobKeyword?: string, options: { limit?: number; json?: boolean; excludeFile?: string; jobLabel?: string; conditionsFile?: string } = {}): Promise<string> {
   const limit = options.limit ?? 10;
   if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error('推荐读取数量必须是 1 到 50 的整数。');
   if (jobKeyword && options.jobLabel) throw new Error('岗位关键字与完整岗位标签不能同时使用');
@@ -644,11 +662,12 @@ export async function runRecommend(jobKeyword?: string, options: { limit?: numbe
     if (!Array.isArray(input) || input.some(p => !p || typeof p.name !== 'string' || typeof p.baseInfo !== 'string')) throw new Error('查重文件必须包含姓名与基本信息两个字段');
     excluded = input;
   }
+  const conditions = options.conditionsFile ? parseReadConditions(JSON.parse(await readFile(options.conditionsFile, 'utf8'))) : undefined;
   try {
     return await withBossSessionPage(async (page) => {
       const frame = await ensureInRecommendPage(page);
       const selectedJob = options.jobLabel ? await selectExactRecommendJob(frame, options.jobLabel) : await selectRecommendJob(frame, (jobKeyword ?? '').trim());
-      const { candidates, stop_reason } = options.excludeFile ? await collectNewRecommendations(frame, limit, excluded) : { candidates: await readRecommendList(frame, limit), stop_reason: 'loaded' };
+      const { candidates, stop_reason } = options.excludeFile ? await collectNewRecommendations(page, frame, limit, excluded, conditions) : { candidates: await readRecommendList(frame, limit), stop_reason: 'loaded' };
       if (await readCurrentRecommendJobLabel(frame) !== selectedJob) throw new Error('读取期间推荐岗位发生变化，结果未保存，请重新选择岗位');
       if (options.json) return JSON.stringify({ version: 1, job_label: selectedJob, limit, candidates, stop_reason, captured_at: new Date().toISOString() });
       const title = selectedJob ? `当前岗位：${selectedJob}` : '当前岗位：默认';

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Checkbox, Collapse, Empty, Form, Image, Input, InputNumber, Modal, Progress, Select, Space, Spin, Switch, Table, Tag, Tooltip, message } from 'antd';
-import { ApiOutlined, CheckCircleOutlined, DatabaseOutlined, EyeOutlined, HistoryOutlined, PlayCircleOutlined, ReloadOutlined, RobotOutlined, SafetyCertificateOutlined, SaveOutlined } from '@ant-design/icons';
-import { aiImage, aiRequest, type AICatalog, type AIConfig, type AIItem, type AIRun, type AISelection, type AIModelList } from '../aiApi';
+import { Alert, Button, Checkbox, Collapse, Empty, Form, Input, InputNumber, Progress, Select, Space, Spin, Switch, Tag, message } from 'antd';
+import { ApiOutlined, CheckCircleOutlined, HistoryOutlined, ReloadOutlined, RobotOutlined, SafetyCertificateOutlined, SaveOutlined } from '@ant-design/icons';
+import { aiRequest, type AIConfig, type AIRun, type AIModelList, type AIJobPrompt } from '../aiApi';
+import { fetchRecommendationJobs, type RecommendationJob } from '../api';
 import './AIManagement.css';
 
 const errorText = (e: unknown) => e instanceof Error ? e.message : '操作失败，请重试';
@@ -15,6 +16,15 @@ export function AIManagement({ active, onOpen }: { active: boolean; onOpen: () =
   const [apiKey, setApiKey] = useState('');
   const [clearKey, setClearKey] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [promptJobId, setPromptJobId] = useState('');
+  const [promptJobs, setPromptJobs] = useState<RecommendationJob[]>([]);
+  const [promptText, setPromptText] = useState('');
+  const [scoreText, setScoreText] = useState('');
+  const [jobJd, setJobJd] = useState('');
+  const [promptCustom, setPromptCustom] = useState(false);
+  const [promptDirty, setPromptDirty] = useState(false);
+  const [promptLoading, setPromptLoading] = useState(false);
+  const [promptRefresh, setPromptRefresh] = useState(0);
   const [working, setWorking] = useState('');
   const [error, setError] = useState('');
   const [connection, setConnection] = useState('');
@@ -24,16 +34,6 @@ export function AIManagement({ active, onOpen }: { active: boolean; onOpen: () =
   const [modelsError, setModelsError] = useState('');
   const [manualModel, setManualModel] = useState(false);
   const modelVersion = useRef(0);
-  const [source, setSource] = useState<AISelection['source']>('recommendations');
-  const [jobId, setJobId] = useState('');
-  const [selected, setSelected] = useState<string[]>([]);
-  const [query, setQuery] = useState('');
-  const [includeImages, setIncludeImages] = useState(false);
-  const [jobContext, setJobContext] = useState('');
-  const [catalog, setCatalog] = useState<AICatalog>({ jobs: [], candidates: [] });
-  const [dataLoading, setDataLoading] = useState(false);
-  const [refresh, setRefresh] = useState(0);
-  const [preview, setPreview] = useState<AIItem[] | null>(null);
   const [history, setHistory] = useState<AIRun[]>([]);
   const [current, setCurrent] = useState<AIRun | null>(null);
   const [pollError, setPollError] = useState('');
@@ -74,15 +74,36 @@ export function AIManagement({ active, onOpen }: { active: boolean; onOpen: () =
   }
   useEffect(() => { if (active && !initialized.current) void load(); }, [active]);
   useEffect(() => {
-    if (!config) return;
-    const abort = new AbortController();
-    setDataLoading(true);
-    void aiRequest<AICatalog>(`/data?source=${source}&job_id=${encodeURIComponent(jobId)}`, 'GET', undefined, abort.signal)
-      .then(value => { setCatalog(value); setSelected(ids => ids.filter(id => value.candidates.some(c => c.id === id))); })
-      .catch(e => { if (!abort.signal.aborted) setError(errorText(e)); })
-      .finally(() => { if (!abort.signal.aborted) setDataLoading(false); });
-    return () => abort.abort();
-  }, [!!config, source, jobId, refresh]);
+    const refreshSavedPrompt = () => {
+      if (!dirty && initialized.current) void aiRequest<AIConfig>('/config').then(setConfig).catch(() => {});
+    };
+    window.addEventListener('ai-config-saved', refreshSavedPrompt);
+    return () => window.removeEventListener('ai-config-saved', refreshSavedPrompt);
+  }, [dirty]);
+  useEffect(() => {
+    const refresh = () => setPromptRefresh(value => value + 1);
+    window.addEventListener('ai-prompt-saved', refresh);
+    return () => window.removeEventListener('ai-prompt-saved', refresh);
+  }, []);
+  useEffect(() => {
+    if (!active || !config) return;
+    const controller = new AbortController();
+    void fetchRecommendationJobs(controller.signal).then(value => { if (!controller.signal.aborted) setPromptJobs(value.jobs); })
+      .catch(e => { if (!controller.signal.aborted) setError(errorText(e)); });
+    return () => controller.abort();
+  }, [active, !!config]);
+  useEffect(() => {
+    if (!config || promptDirty) return;
+    setPromptText(config.prompt);
+    if (!promptJobId) { setScoreText(''); setJobJd(''); setPromptCustom(false); setPromptLoading(false); return; }
+    const controller = new AbortController();
+    setPromptLoading(true); setScoreText(''); setJobJd(''); setPromptCustom(false);
+    void aiRequest<AIJobPrompt>(`/prompts/${encodeURIComponent(promptJobId)}`, 'GET', undefined, controller.signal)
+      .then(value => { if (!controller.signal.aborted) { setScoreText(value.prompt); setJobJd(value.jd); setPromptCustom(value.custom); } })
+      .catch(e => { if (!controller.signal.aborted) setError(errorText(e)); })
+      .finally(() => { if (!controller.signal.aborted) setPromptLoading(false); });
+    return () => controller.abort();
+  }, [promptJobId, config?.prompt, promptDirty, promptRefresh]);
   useEffect(() => {
     if (!config) return;
     let stopped = false;
@@ -118,20 +139,32 @@ export function AIManagement({ active, onOpen }: { active: boolean; onOpen: () =
     setConfig(saved); setApiKey(''); setClearKey(false); setDirty(false);
     return saved;
   }
+  async function savePrompt() {
+    if (!promptText.trim()) throw new Error('请先填写提示词');
+    await persist({ prompt: promptText });
+    if (promptJobId) {
+      const saved = await aiRequest<AIJobPrompt>(`/prompts/${encodeURIComponent(promptJobId)}`, 'PUT', { ...(scoreText.trim() ? { prompt: scoreText } : {}), jd: jobJd });
+      setScoreText(saved.prompt); setJobJd(saved.jd); setPromptCustom(saved.custom);
+    }
+    setPromptDirty(false);
+    window.dispatchEvent(new Event('ai-prompt-saved'));
+  }
+  function choosePromptJob(next: string) {
+    if (promptDirty) { toast.warning('请先保存当前提示词，再切换岗位'); return false; }
+    setPromptJobId(next);
+    return true;
+  }
   async function action(kind: string, operation: () => Promise<void>) {
     if (working) return;
     setWorking(kind); setError('');
     try { await operation(); } catch (e) { setError(errorText(e)); } finally { setWorking(''); }
   }
-  const selection: AISelection = { source, job_id: jobId, candidate_ids: selected, include_images: source === 'recommendations' && includeImages, job_context: jobContext };
-  const visible = catalog.candidates.filter(c => `${c.name} ${c.summary} ${c.job}`.toLowerCase().includes(query.trim().toLowerCase()));
-  const imageCount = includeImages && source === 'recommendations' ? catalog.candidates.filter(c => selected.includes(c.id) && c.has_image).length : 0;
   const item = current?.items?.find(i => i.candidate_id === resultId) ?? current?.items?.[0];
 
   return <>{context}
     {!active && task && <div className="workspace-task-progress" role="status"><div className="workspace-task-heading"><strong><RobotOutlined /> AI 分析正在后台进行 · {task.completed}/{task.total} 人</strong><Button type="link" onClick={onOpen}>查看 AI 任务</Button></div><Progress percent={Math.round(task.completed / task.total * 100)} size="small" showInfo={false} /></div>}
     <div hidden={!active} className="ai-page">
-      <div className="ai-hero"><div><div className="eyebrow">YOUR LOCAL TALENT, WITH AI</div><h1><RobotOutlined /> AI 管理</h1><p>连接你的模型，让本地人才资料成为分析的依据。</p></div><div className="ai-mode"><SafetyCertificateOutlined /><span>手动运行 · 结果保存到本地</span></div></div>
+      <div className="ai-hero"><div><div className="eyebrow">YOUR LOCAL TALENT, WITH AI</div><h1><RobotOutlined /> AI 管理</h1><p>配置模型、岗位要求和打分标准；在推荐牛人页面发起评估。</p></div><div className="ai-mode"><SafetyCertificateOutlined /><span>结果保存到本地</span></div></div>
       {error && <Alert type="error" showIcon message={error} closable onClose={() => setError('')} />}
       {!config ? <div className="ai-loading"><Spin /><span>正在加载 AI 工作区</span>{error && <Button onClick={() => void load()}>重新加载</Button>}</div> : <>
         <div className="ai-layout">
@@ -161,23 +194,12 @@ export function AIManagement({ active, onOpen }: { active: boolean; onOpen: () =
           </section>
           <div className="ai-main">
             <section className="ai-card">
-              <div className="ai-card-title"><span className="ai-step">02</span><div><h2>告诉 AI 如何分析</h2><p>每次分析都会向模型发送这份提示词和对应人选的本地资料。</p></div><Tag bordered={false}>{dirty ? '有未保存修改' : '已保存'}</Tag></div>
-              <Input.TextArea aria-label="AI 分析提示词" className="ai-prompt" value={config.prompt} onChange={e => edit('prompt', e.target.value)} disabled={busy} autoSize={{ minRows: 7, maxRows: 16 }} maxLength={20000} showCount placeholder="写下分析目的、岗位要求、评价维度，以及你希望的输出格式…" />
-              <div className="ai-prompt-footer"><span>可写入分析维度、证据要求、输出格式。</span><Button icon={<SaveOutlined />} disabled={busy} loading={working === 'save'} onClick={() => void action('save', async () => { await persist(); toast.success('配置与提示词已保存'); })}>保存设置与提示词</Button></div>
-            </section>
-            <section className="ai-card">
-              <div className="ai-card-title"><span className="ai-step">03</span><div><h2>选择本地资料</h2><p>仅发送勾选的人选，每次最多 20 人，逐人分析。</p></div><Tooltip title="刷新本地数据库列表"><Button aria-label="刷新本地资料" icon={<ReloadOutlined />} disabled={dataLoading || busy} onClick={() => setRefresh(x => x + 1)} /></Tooltip></div>
-              <div className="ai-data-controls"><Select aria-label="资料来源" value={source} disabled={busy} onChange={value => { setSource(value); setJobId(''); setSelected([]); setQuery(''); setIncludeImages(false); setCatalog({ jobs: [], candidates: [] }); }} options={[{ value: 'recommendations', label: '推荐牛人' }, { value: 'communications', label: '沟通候选人' }]} /><Select aria-label="分析岗位" showSearch optionFilterProp="label" value={jobId} disabled={busy || dataLoading} onChange={value => { setJobId(value); setSelected([]); }} options={[{ value: '', label: '全部本地岗位' }, ...catalog.jobs.map(j => ({ value: j.id, label: `${j.label}（${j.count}）` }))]} /></div>
-              <Input.TextArea aria-label="本次岗位补充要求" value={jobContext} disabled={busy} onChange={e => setJobContext(e.target.value)} autoSize={{ minRows: 2, maxRows: 5 }} maxLength={10000} placeholder="本次岗位补充要求（可选）：粘贴 JD、关键技能或项目要求，让分析更有依据。" />
-              <div className="ai-table-toolbar"><Input.Search aria-label="搜索待分析人选" allowClear placeholder="搜索姓名、基本信息或岗位" value={query} onChange={e => setQuery(e.target.value)} /><Button type="text" disabled={busy || dataLoading} onClick={() => setSelected(visible.slice(0, 20).map(c => c.id))}>选择前 20 人</Button><Button type="text" disabled={busy || !selected.length} onClick={() => setSelected([])}>清空</Button></div>
-              <Table size="small" rowKey="id" className="ai-people-table" scroll={{ x: 580 }} loading={dataLoading} dataSource={visible} pagination={{ pageSize: 5, showSizeChanger: false, hideOnSinglePage: true, showTotal: total => `${total} 人` }} locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无本地资料，请先在对应页面读取候选人" /> }} rowSelection={{ selectedRowKeys: selected, onChange: ids => { if (ids.length > 20) { toast.info('每次最多选择 20 人'); return; } setSelected(ids.map(String)); }, getCheckboxProps: row => ({ disabled: busy || (selected.length >= 20 && !selected.includes(row.id)) }) }} columns={[
-                { title: '候选人', key: 'person', render: (_, row) => <div><strong>{row.name}</strong><div className="ai-person-info">{row.summary}</div></div> },
-                { title: '来源岗位', dataIndex: 'job', ellipsis: true, width: '35%' },
-                { title: '简历资料', key: 'resume', width: 106, render: (_, row) => <Tag bordered={false} color={row.has_image ? 'green' : 'default'}>{row.has_image ? '截图已保存' : source === 'recommendations' ? '仅列表文字' : '本地文字'}</Tag> },
-              ]} />
-              {source === 'recommendations' && <div className="ai-image-option"><Switch checked={includeImages} disabled={busy} onChange={setIncludeImages} /><div><strong>附带在线简历截图</strong><p>需要模型支持图片。未保存截图的人选仅发送文字资料。</p></div></div>}
-              <div className="ai-send-summary"><DatabaseOutlined /><div>本次发送 <strong>{selected.length}</strong> 人的文字资料{imageCount > 0 && <>及 <strong>{imageCount}</strong> 张简历截图</>}<small>发往 {config.base_url || '尚未填写 API 地址'} · 结果供人工参考</small></div></div>
-              <div className="ai-run-actions"><Button icon={<EyeOutlined />} disabled={busy || !selected.length || dataLoading} loading={working === 'preview'} onClick={() => void action('preview', async () => { const value = await aiRequest<{ items: AIItem[] }>('/preview', 'POST', selection); setPreview(value.items); })}>预览发送资料</Button><Button type="primary" icon={<PlayCircleOutlined />} disabled={busy || isRunning || !selected.length || !config.model.trim() || !config.prompt.trim() || dataLoading} loading={working === 'start'} onClick={() => void action('start', async () => { await persist(); const run = await aiRequest<AIRun>('/runs', 'POST', selection); setCurrent(run); currentId.current = run.id; setResultId(''); setHistory(rows => [run, ...rows]); toast.success('AI 分析已开始，可切换页面，进度会持续保留'); })}>保存并开始分析</Button></div>
+              <div className="ai-card-title"><span className="ai-step">02</span><div><h2>告诉 AI 如何分析</h2><p>通用提示词与岗位 JD、打分标准会一起用于评估。</p></div><Tag bordered={false}>{promptDirty || dirty ? '有未保存修改' : '已保存'}</Tag></div>
+              <label className="recommendation-ai-label">通用提示词 · 所有评估共用</label>
+              <Input.TextArea aria-label="通用提示词" className="ai-prompt" value={promptText} onChange={e => { setPromptText(e.target.value); setPromptDirty(true); }} disabled={busy} autoSize={{ minRows: 7, maxRows: 16 }} maxLength={20000} showCount placeholder="写下统一的分析要求和回答格式…" />
+              <div className="ai-prompt-job"><span>岗位 JD 与打分标准</span><Select aria-label="选择打分标准岗位" showSearch optionFilterProp="label" value={promptJobId} disabled={busy || promptLoading} onChange={choosePromptJob} options={[{ value: '', label: '请选择岗位' }, ...promptJobs.map(job => ({ value: job.id, label: `${job.label}${job.available ? '' : '（历史岗位）'}` }))]} /><small>岗位暂时下线时配置会保留，再次出现时自动恢复。</small></div>
+              {promptJobId && <><label className="recommendation-ai-label">岗位 JD（可选）</label><Input.TextArea aria-label="岗位 JD" value={jobJd} onChange={e => { setJobJd(e.target.value); setPromptDirty(true); }} disabled={busy || promptLoading} autoSize={{ minRows: 3, maxRows: 9 }} maxLength={10000} placeholder="填写该岗位的职责、要求或完整 JD" /><label className="recommendation-ai-label">打分标准 · 此岗位专属</label><Input.TextArea aria-label="岗位打分标准" value={scoreText} onChange={e => { setScoreText(e.target.value); setPromptDirty(true); }} disabled={busy || promptLoading} autoSize={{ minRows: 4, maxRows: 12 }} maxLength={20000} placeholder="填写这个岗位如何判断契合程度；未填写则只使用通用提示词和 JD" /></>}
+              <div className="ai-prompt-footer"><span>通用提示词、岗位 JD 和打分标准分别保存，评估时组合发送。</span><Space><Button disabled={busy} onClick={() => void action('open-storage', async () => { await aiRequest('/prompts/open-storage', 'POST'); })}>打开存储位置</Button>{promptJobId && promptCustom && <Button disabled={busy || promptLoading || promptDirty} onClick={() => void action('reset-prompt', async () => { const saved = await aiRequest<AIJobPrompt>(`/prompts/${encodeURIComponent(promptJobId)}`, 'DELETE'); setScoreText(saved.prompt); setPromptCustom(false); window.dispatchEvent(new Event('ai-prompt-saved')); toast.success('已清除此岗位打分标准'); })}>清除打分标准</Button>}<Button icon={<SaveOutlined />} disabled={busy || promptLoading || !promptText.trim()} loading={working === 'save'} onClick={() => void action('save', async () => { await savePrompt(); toast.success('提示词与岗位配置已保存'); })}>保存设置</Button></Space></div>
             </section>
           </div>
         </div>
@@ -189,13 +211,9 @@ export function AIManagement({ active, onOpen }: { active: boolean; onOpen: () =
             {running(current) && <Progress percent={Math.round(current.completed / current.total * 100)} status="active" />}
             {current.error && <Alert type="warning" message={current.error} showIcon />}
             <div className="ai-result-layout"><div className="ai-result-people">{current.items?.map(i => <button key={i.candidate_id} aria-pressed={item?.candidate_id === i.candidate_id} onClick={() => setResultId(i.candidate_id)}><span>{i.name}</span><small>{statuses[i.status] ?? i.status}</small></button>)}</div><div className="ai-result-content">{item && <><div className="ai-answer-heading"><h3>{item.name}</h3><Space><span>{item.elapsed_seconds !== null && `${item.elapsed_seconds} 秒`}{item.usage.total_tokens ? ` · ${item.usage.total_tokens} Tokens` : ''}</span>{item.output && <Button size="small" onClick={() => void navigator.clipboard.writeText(item.output).then(() => toast.success('已复制分析结果')).catch(() => toast.error('复制失败，请手动选中文本复制'))}>复制结果</Button>}</Space></div>{item.error && <Alert message={item.error} type="warning" showIcon />}{item.truncated && <Alert message="输出达到 Token 上限，内容可能不完整。可提高上限后重新分析。" type="warning" />}{item.output ? <div className="ai-answer">{item.output}</div> : !item.error && <div className="ai-answer-pending">{item.status === 'running' ? <><Spin size="small" /> 正在阅读资料并生成分析…</> : '等待分析此人'}</div>}<Collapse ghost items={[{ key: 'input', label: '查看本次提示词与资料依据', children: <><h4>实际使用的提示词</h4><pre className="ai-json">{current.config?.prompt}</pre><h4>本地文字快照</h4><pre className="ai-json">{JSON.stringify(item.data, null, 2)}</pre>{item.image_id && <p>本次附带了该候选人的在线简历截图。</p>}</> }]} /></>}</div></div>
-          </> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有分析记录，配置模型并选择本地资料即可开始" />}
+          </> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有分析记录；请到推荐牛人页面选择人选并发起评估" />}
         </section>
       </>}
-      <Modal title="发送资料预览" open={preview !== null} onCancel={() => setPreview(null)} footer={<Button onClick={() => setPreview(null)}>关闭预览</Button>} width={820}>
-        <p className="ai-small-note">以下为本地资料，不会在预览时调用模型。正式运行时使用已保存的提示词，并读取当时的本地资料。</p>
-        <Collapse items={preview?.map(i => ({ key: i.candidate_id, label: `${i.name}${i.image_id ? ' · 含在线简历截图' : ' · 文字资料'}`, children: <><pre className="ai-json">{JSON.stringify(i.data, null, 2)}</pre>{i.image_id && <Image width={180} src={aiImage(i.image_id)} />}</> }))} />
-      </Modal>
     </div>
   </>;
 }

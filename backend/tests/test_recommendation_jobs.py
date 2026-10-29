@@ -6,7 +6,7 @@ from test_discovery import database, Adapter, recommendation, ScreenshotAdapter
 from app.services.discovery import DiscoveryService
 from app.db.models import RecommendedCandidateRecord, RecommendationRecycleRecord, RecommendationJobRecord
 from app.parsers.boss_cli_output import BossCliOutputError
-from app.schemas.discovery import RecommendedPerson
+from app.schemas.discovery import ReadConditions, RecommendedPerson
 from app.core.config import Settings
 
 
@@ -26,6 +26,44 @@ def test_twenty_bound_and_wrong_job_result_never_written():
     adapter.body = batch('岗位 B', 1)
     with pytest.raises(BossCliOutputError, match='岗位与所选岗位不一致'): asyncio.run(svc.read_recommendations(job.id))
     assert db.query(RecommendedCandidateRecord).count() == 20
+
+
+def test_custom_read_count_is_forwarded_and_strictly_bounded():
+    db = database(); adapter = Adapter(batch('岗位 A', 5)); svc = DiscoveryService(db, adapter)
+    job = svc.remember_job('岗位 A', available=True)
+    result = asyncio.run(svc.read_recommendations(job.id, 5))
+    assert len(result.added_ids) == 5
+    assert adapter.calls[0][1:3] == ('--limit', '5')
+    adapter.body = batch('岗位 A', 6)
+    with pytest.raises(BossCliOutputError):
+        asyncio.run(svc.read_recommendations(job.id, 5))
+    for invalid in (0, 51, 2.5, True):
+        with pytest.raises(ValueError, match='1 到 50 的整数'):
+            asyncio.run(svc.read_recommendations(job.id, invalid))
+    assert len(adapter.calls) == 2
+
+
+def test_read_conditions_are_forwarded_and_unmatched_results_are_not_saved():
+    class InspectingAdapter(Adapter):
+        async def run(self, *args):
+            if '--conditions-file' in args:
+                from pathlib import Path
+                self.sent_conditions = json.loads(Path(args[args.index('--conditions-file') + 1]).read_text(encoding='utf-8'))
+            return await super().run(*args)
+
+    db = database(); adapter = InspectingAdapter(batch('岗位 A')); svc = DiscoveryService(db, adapter)
+    job = svc.remember_job('岗位 A', available=True)
+    conditions = ReadConditions.model_validate({'groups': [{'conjunction': 'or', 'filters': [
+        {'field': 'highlights', 'op': 'contains', 'value': '985'},
+        {'field': 'highlights', 'op': 'contains', 'value': '211'},
+    ]}]})
+    adapter.body['candidates'][0]['highlights'] = ['985院校']
+    result = asyncio.run(svc.read_recommendations(job.id, 1, conditions))
+    assert len(result.added_ids) == 1 and adapter.sent_conditions == conditions.model_dump()
+    adapter.body['candidates'][0]['highlights'] = ['普通本科']
+    with pytest.raises(BossCliOutputError, match='不符合读取条件'):
+        asyncio.run(svc.read_recommendations(job.id, 1, conditions))
+    assert db.query(RecommendedCandidateRecord).count() == 1
 
 
 def test_same_person_separate_jobs_dedup_delete_and_restore(tmp_path, monkeypatch):

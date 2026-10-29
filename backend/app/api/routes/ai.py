@@ -1,4 +1,6 @@
 import asyncio
+import os
+from pathlib import Path
 from threading import Lock
 from typing import Literal
 
@@ -9,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.db.models import AIManagedRunRecord
 from app.db.session import get_db
-from app.schemas.ai import AIConfigSave, AISelection
+from app.schemas.ai import AIConfigSave, AIJobPromptSave, AISelection
 from app.services.ai_management import AIManagementService, call_model, execute_run, fetch_models
 
 
@@ -35,6 +37,43 @@ def save_config(payload: AIConfigSave, db: Session = Depends(get_db)):
         return AIManagementService(db).save_config(payload)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@router.post('/prompts/open-storage')
+def open_prompt_storage():
+    url = get_settings().database_url
+    if os.name != 'nt' or not url.startswith('sqlite:///'):
+        raise HTTPException(400, '当前运行环境无法打开本地数据库文件夹')
+    folder = Path(url.removeprefix('sqlite:///')).resolve().parent
+    try:
+        os.startfile(folder)
+    except OSError as exc:
+        raise HTTPException(500, '无法打开数据库文件夹') from exc
+    return {'path': str(folder)}
+
+
+@router.get('/prompts/{job_key}')
+def job_prompt(job_key: str, db: Session = Depends(get_db)):
+    try:
+        return AIManagementService(db).job_prompt(job_key)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.put('/prompts/{job_key}')
+def save_job_prompt(job_key: str, payload: AIJobPromptSave, db: Session = Depends(get_db)):
+    try:
+        return AIManagementService(db).save_job_prompt(job_key, payload.prompt, payload.jd)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.delete('/prompts/{job_key}')
+def clear_job_prompt(job_key: str, db: Session = Depends(get_db)):
+    try:
+        return AIManagementService(db).clear_job_prompt(job_key)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @router.post('/test')
@@ -82,11 +121,27 @@ def start_run(payload: AISelection, background: BackgroundTasks, db: Session = D
         return AIManagementService.run_view(row)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @router.get('/runs')
 def runs(db: Session = Depends(get_db)):
     return [AIManagementService.run_view(row, detail=False) for row in db.scalars(select(AIManagedRunRecord).order_by(AIManagedRunRecord.created_at.desc()).limit(30))]
+
+
+@router.get('/recommendation-results')
+def recommendation_results(job_id: str = '', db: Session = Depends(get_db)):
+    return [{key: value for key, value in result.items() if key != 'output'}
+            for result in AIManagementService(db).recommendation_results(job_id)]
+
+
+@router.get('/recommendation-results/{candidate_id}')
+def recommendation_result(candidate_id: str, job_id: str = '', db: Session = Depends(get_db)):
+    results = AIManagementService(db).recommendation_results(job_id, candidate_id)
+    if not results:
+        raise HTTPException(404, '此人尚无可查看的 AI 评估')
+    return results[0]
 
 
 @router.get('/runs/{run_id}')

@@ -15,7 +15,7 @@ export async function captureRecommendationBatch(
   onSaved: (person: RecommendedPerson, screenshot: OnlineResumeScreenshot) => void,
   onProgress: (progress: ResumeBatchProgress) => void,
 ): Promise<string[]> {
-  if (people.length > 20) throw new Error('本次推荐人数超过 20 人，已停止批量截图');
+  if (people.length > 50) throw new Error('本次推荐人数超过 50 人，已停止批量截图');
   const failures: string[] = [];
   for (const [index, person] of people.entries()) {
     onProgress({ total: people.length, completed: index, failed: failures.length, currentName: person.name });

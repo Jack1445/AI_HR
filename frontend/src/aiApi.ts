@@ -4,6 +4,7 @@ export interface AIConfig {
   send_session_id: boolean;
   prompt: string; has_key: boolean;
 }
+export interface AIJobPrompt { job_key: string; job_label: string; prompt: string; custom: boolean; jd: string }
 export interface AISelection {
   source: 'recommendations' | 'communications'; job_id: string; candidate_ids: string[];
   include_images: boolean; job_context: string;
@@ -22,6 +23,9 @@ export interface AIRun {
   id: string; status: string; model: string; created_at: string; finished_at: string | null;
   total: number; completed: number; failed: number; error: string;
   selection: AISelection; config?: AIConfig; items?: AIItem[];
+}
+export interface AIRecommendationResult {
+  candidate_id: string; run_id: string; stars: number; model: string; created_at: string; output?: string;
 }
 const base = import.meta.env.VITE_API_BASE_URL ?? '';
 export function aiImage(id: string) { return `${base}/api/local/recommendation-resumes/${id}/image`; }

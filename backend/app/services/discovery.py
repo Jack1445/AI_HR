@@ -22,7 +22,7 @@ from app.services.resumes import ResumeService
 from app.db.models import RecommendationFirstCaptureRecord, RecommendationHiddenRecord
 from app.services.table_store import cleanup_table_row
 from app.db.models import RecommendationJobRecord, RecommendationRecycleJobRecord
-from app.schemas.discovery import RecommendationJobsSnapshot, RECOMMENDATION_READ_LIMIT
+from app.schemas.discovery import RecommendationJobsSnapshot, RECOMMENDATION_READ_LIMIT, ReadConditions
 from app.services.recommendation_scope import build_active_recommendation_index, recommendation_identity_for_chat, normalize, recommendation_job_title, unambiguous_stored_chat_keys
 
 _library_upgrade_lock = RLock()
@@ -38,6 +38,32 @@ class DiscoveryService:
         # Both fields must match; never merge by name or remote ID alone.
         fields = [' '.join(person.name.split()), ' '.join(person.baseInfo.split())]
         return hashlib.sha256(dumps(fields).encode('utf-8')).hexdigest()
+
+    @staticmethod
+    def matches_read_conditions(person: RecommendedPerson, conditions: ReadConditions) -> bool:
+        if not conditions.groups:
+            return True
+
+        def matches(rule) -> bool:
+            value = getattr(person, rule.field)
+            items = [item.lower() for item in (value if isinstance(value, list) else [value])]
+            needle = rule.value.lower()
+            empty = not items or all(not item for item in items)
+            if rule.op == 'empty':
+                return empty
+            if rule.op == 'not_empty':
+                return not empty
+            if rule.op == 'contains':
+                return any(needle in item for item in items)
+            if rule.op == 'not_contains':
+                return all(needle not in item for item in items)
+            if rule.op == 'eq':
+                return any(item == needle for item in items)
+            return all(item != needle for item in items)
+
+        results = [all(matches(rule) for rule in group.filters) if group.conjunction == 'and'
+                   else any(matches(rule) for rule in group.filters) for group in conditions.groups]
+        return all(results) if conditions.conjunction == 'and' else any(results)
 
     @staticmethod
     def job_key(label: str) -> str:
@@ -367,7 +393,9 @@ class DiscoveryService:
             path.unlink(missing_ok=True)
             raise
 
-    async def read_recommendations(self, job_key: str) -> RecommendationReadResult:
+    async def read_recommendations(self, job_key: str, limit: int = RECOMMENDATION_READ_LIMIT, conditions: ReadConditions | None = None) -> RecommendationReadResult:
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 50:
+            raise ValueError('每次新增人数须为 1 到 50 的整数')
         self._prepare_library()
         job = self._job(job_key)
         if not job.available or not job.label:
@@ -381,15 +409,22 @@ class DiscoveryService:
         with tempfile.TemporaryDirectory(prefix='ai-hr-recommend-') as folder:
             path = Path(folder) / 'excluded.json'
             path.write_text(dumps(identities), encoding='utf-8')
-            result = await self.adapter.run('recommend', '--limit', str(RECOMMENDATION_READ_LIMIT), '--json', '--exclude-file', str(path), '--job-label', job.label)
+            args = ['recommend', '--limit', str(limit), '--json', '--exclude-file', str(path), '--job-label', job.label]
+            if conditions and conditions.groups:
+                condition_path = Path(folder) / 'conditions.json'
+                condition_path.write_text(conditions.model_dump_json(), encoding='utf-8')
+                args.extend(['--conditions-file', str(condition_path)])
+            result = await self.adapter.run(*args)
         try:
             snapshot = RecommendationSnapshot.model_validate_json(result.stdout)
         except ValueError as error:
             raise BossCliOutputError('推荐列表输出格式不符；请确认本地 boss-cli 已重新构建') from error
-        if snapshot.captured_at is None or len(snapshot.candidates) > min(snapshot.limit, RECOMMENDATION_READ_LIMIT):
+        if snapshot.captured_at is None or len(snapshot.candidates) > min(snapshot.limit, limit):
             raise BossCliOutputError('推荐快照缺少采集时间或超过本次读取上限')
         if ' '.join(snapshot.job_label.split()) != job.label:
             raise BossCliOutputError('BOSS 返回的岗位与所选岗位不一致，未保存任何候选人')
+        if conditions and any(not self.matches_read_conditions(person, conditions) for person in snapshot.candidates):
+            raise BossCliOutputError('推荐列表返回了不符合读取条件的人选，未保存任何候选人')
         known = {self.identity(p) for p in excluded}
         known.update(self.identity(RecommendedPerson.model_construct(name=r.name, baseInfo=r.base_info)) for r in recycled)
         added = []

@@ -49,6 +49,27 @@ class AIConfigSave(AIConfig):
     clear_key: bool = False
 
 
+class AIJobPromptSave(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    prompt: str | None = Field(default=None, min_length=1, max_length=20000)
+    jd: str | None = Field(default=None, max_length=10000)
+
+    @field_validator('prompt')
+    @classmethod
+    def trim_prompt(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError('打分标准不能为空')
+        return value
+
+    @field_validator('jd')
+    @classmethod
+    def trim_jd(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+
 class AISelection(BaseModel):
     model_config = ConfigDict(extra='forbid')
     source: Literal['recommendations', 'communications']

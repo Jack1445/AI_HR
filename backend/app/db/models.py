@@ -280,6 +280,20 @@ class AIConnectionRecord(Base):
     encrypted_key: Mapped[str] = mapped_column(Text, default='')
 
 
+class AIJobPromptRecord(Base):
+    __tablename__ = 'ai_job_prompts'
+    job_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    prompt: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class AIJobJDRecord(Base):
+    __tablename__ = 'ai_job_jds'
+    job_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    jd: Mapped[str] = mapped_column(Text, default='')
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
 class AIManagedRunRecord(Base):
     __tablename__ = 'ai_managed_runs'
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)

@@ -17,9 +17,10 @@ from sqlalchemy.orm import Session
 from app.core.ai_secrets import protect, reveal
 from app.core.config import get_settings
 from app.core.json_utils import dumps, loads
-from app.db.models import (AIConnectionRecord, AIManagedRunRecord, CandidateRecord,
+from app.db.models import (AIConnectionRecord, AIJobJDRecord, AIJobPromptRecord, AIManagedRunRecord, CandidateRecord,
     CommunicationRecycleRecord, JobCandidateRecord, JobRecord, RecommendedCandidateRecord,
-    RecommendedResumeRecord, ResumeDocumentRecord, TableCellRecord, TableWorkspaceRecord)
+    RecommendedResumeRecord, RecommendationHiddenRecord, RecommendationJobRecord,
+    ResumeDocumentRecord, TableCellRecord, TableWorkspaceRecord)
 from app.schemas.ai import AIConfig, AIConfigSave, AISelection
 from app.services.discovery import DiscoveryService
 from app.services.local_store import LocalStoreService
@@ -66,6 +67,37 @@ class AIManagementService:
         self.db.add(row)
         self.db.commit()
         return self.public_config()
+
+    def job_prompt(self, job_key: str) -> dict:
+        job = self.db.get(RecommendationJobRecord, job_key)
+        if job is None:
+            raise LookupError('推荐岗位不存在，请刷新岗位列表')
+        saved = self.db.get(AIJobPromptRecord, job_key)
+        jd = self.db.get(AIJobJDRecord, job_key)
+        return {'job_key': job_key, 'job_label': job.label,
+            'prompt': saved.prompt if saved else '', 'custom': saved is not None,
+            'jd': jd.jd if jd else ''}
+
+    def save_job_prompt(self, job_key: str, prompt: str | None = None, jd: str | None = None) -> dict:
+        self.job_prompt(job_key)
+        if prompt is not None:
+            row = self.db.get(AIJobPromptRecord, job_key) or AIJobPromptRecord(job_key=job_key, prompt=prompt)
+            row.prompt = prompt
+            self.db.add(row)
+        if jd is not None:
+            row = self.db.get(AIJobJDRecord, job_key) or AIJobJDRecord(job_key=job_key, jd=jd)
+            row.jd = jd
+            self.db.add(row)
+        self.db.commit()
+        return self.job_prompt(job_key)
+
+    def clear_job_prompt(self, job_key: str) -> dict:
+        self.job_prompt(job_key)
+        row = self.db.get(AIJobPromptRecord, job_key)
+        if row:
+            self.db.delete(row)
+            self.db.commit()
+        return self.job_prompt(job_key)
 
     def connection_config(self) -> tuple[AIConfig, str]:
         config, encrypted = self.config()
@@ -165,13 +197,51 @@ class AIManagementService:
             raise ValueError('已有 AI 分析任务正在运行，请等待完成')
         config, key = self.ready_config()
         if not config.prompt:
-            raise ValueError('请先填写分析提示词')
+            raise ValueError('请先填写通用提示词')
+        if selection.source == 'recommendations' and selection.job_id:
+            job = self.job_prompt(selection.job_id)
+            parts = [f'通用提示词：\n{config.prompt}']
+            if job['jd']:
+                parts.append(f"岗位 JD：\n{job['jd']}")
+            if job['prompt']:
+                parts.append(f"岗位打分标准：\n{job['prompt']}")
+            config = config.model_copy(update={'prompt': '\n\n'.join(parts)})
         items = self.snapshot(selection)
         row = AIManagedRunRecord(config_json=config.model_dump_json(), selection_json=selection.model_dump_json(), items_json=dumps(items))
         self.db.add(row)
         self.db.commit()
         self.db.refresh(row)
         return row, config, key
+
+    @staticmethod
+    def stars_from_output(output: str) -> int:
+        """Only a first line made entirely of one to five stars is a rating."""
+        first = next((line.strip() for line in output.splitlines() if line.strip()), '')
+        first = first.strip('`*_ \t')
+        return len(re.findall(r'★|⭐\ufe0f?', first)) if re.fullmatch(r'(?:★|⭐\ufe0f?){1,5}', first) else 0
+
+    def recommendation_results(self, job_id: str = '', candidate_id: str = '') -> list[dict]:
+        hidden = select(RecommendationHiddenRecord.candidate_id)
+        candidates = self.db.scalars(select(RecommendedCandidateRecord).where(
+            RecommendedCandidateRecord.deleted_at.is_(None), RecommendedCandidateRecord.id.not_in(hidden))).all()
+        allowed = {row.id for row in candidates if not job_id or DiscoveryService.job_key(row.source_job) == job_id}
+        if candidate_id:
+            allowed.intersection_update({candidate_id})
+        found: dict[str, dict] = {}
+        for run in self.db.scalars(select(AIManagedRunRecord).order_by(
+                AIManagedRunRecord.created_at.desc(), AIManagedRunRecord.id.desc())):
+            if len(found) == len(allowed):
+                break
+            if loads(run.selection_json, {}).get('source') != 'recommendations':
+                continue
+            for item in loads(run.items_json, []):
+                candidate = item.get('candidate_id')
+                if candidate not in allowed or candidate in found or item.get('status') != 'success' or not item.get('output'):
+                    continue
+                found[candidate] = {'candidate_id': candidate, 'run_id': run.id,
+                    'stars': self.stars_from_output(item['output']), 'output': item['output'],
+                    'model': loads(run.config_json, {}).get('model', ''), 'created_at': run.created_at}
+        return list(found.values())
 
     @staticmethod
     def run_view(row: AIManagedRunRecord, detail: bool = True) -> dict:

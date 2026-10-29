@@ -24,6 +24,7 @@ export function useRecommendationGreetings(jobKey: string, jobLabel: string, set
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
   const [pollError, setPollError] = useState('');
+  const [dismissedResultId, setDismissedResultId] = useState('');
   const [dailyCount, setDailyCount] = useState<DailyGreetingCount | null>(null);
   const [dailyError, setDailyError] = useState('');
   const [draft, setDraft] = useState<{ request_id: string; job_key: string; job_label: string; people: RecommendedPerson[] } | null>(null);
@@ -37,6 +38,16 @@ export function useRecommendationGreetings(jobKey: string, jobLabel: string, set
   const wasRunning = useRef(false);
   const current = batches.find(active) ?? batches.find(b => b.job_key === jobKey);
   const running = active(current);
+  useEffect(() => {
+    if (!current || running || dismissedResultId === current.id) return;
+    const timer = window.setTimeout(() => setDismissedResultId(current.id), 10_000);
+    return () => window.clearTimeout(timer);
+  }, [current?.id, running, dismissedResultId]);
+  useEffect(() => {
+    if (!error) return;
+    const timer = window.setTimeout(() => setError(''), 10_000);
+    return () => window.clearTimeout(timer);
+  }, [error]);
   const chosen = batches.find(b => b.id === historyId) ?? current;
   const greetedIds = useMemo(() => new Set(batches.filter(b => b.job_key === jobKey).flatMap(b => b.items.filter(i => i.status === 'sent').map(i => i.candidate_id))), [batches, jobKey]);
   // Polling is read-only; only the final confirmation below creates a task.
@@ -69,11 +80,11 @@ export function useRecommendationGreetings(jobKey: string, jobLabel: string, set
     if (running || starting) { ownedBusy.current = true; setBusy(true); }
     else if (ownedBusy.current) { ownedBusy.current = false; setBusy(false); }
   }, [running, starting, setBusy]);
-  const activity = useMemo<RecommendationActivity | null>(() => current ? {
+  const activity = useMemo<RecommendationActivity | null>(() => current && (running || dismissedResultId !== current.id) ? {
     kind: 'greet', running, job: current.job_label,
     progress: { total: current.total, completed: current.completed, failed: current.items.filter(i => !['sent', 'already', 'pending', 'executing'].includes(i.status)).length, currentName: current.items.find(i => i.status === 'executing')?.name ?? null },
     error: pollError || (current.items.some(i => !['sent', 'already', 'pending', 'executing'].includes(i.status)) ? '部分人选需查看结果' : null),
-  } : null, [current, running, pollError]);
+  } : null, [current, running, pollError, dismissedResultId]);
   const submit = async () => {
     if (!draft || submitting.current || running) return;
     submitting.current = true; setStarting(true); setError(''); sequence.current++;
@@ -98,7 +109,7 @@ export function useRecommendationGreetings(jobKey: string, jobLabel: string, set
     panel: <>
       {error && <Alert className="greeting-feedback" type="warning" showIcon message={error} />}
       {pollError && <Alert className="greeting-feedback" type="warning" showIcon message={pollError} />}
-      {current && <div className="greeting-progress" role="status" aria-live="polite"><div className="greeting-progress-heading"><Space><MessageOutlined /><strong>{running ? '正在逐一打招呼' : current.status === 'interrupted' ? '打招呼任务已中断' : '本次打招呼结果'}</strong><Tag>{current.completed}/{current.total} 人</Tag></Space><Button size="small" type="link" onClick={() => { setHistoryId(current.id); setDetails(true); }}>查看明细</Button></div><div className="muted">{current.job_label}</div><Progress percent={current.total ? Math.round(current.completed / current.total * 100) : 0} size="small" showInfo={false} status={running ? 'active' : 'normal'} /><span>已发送 {current.sent} 人 · 已招呼跳过 {current.already} 人 · 其他 {current.completed - current.sent - current.already} 人{running ? ' · 切换页面后仍会继续，进度自动保存' : ''}</span></div>}
+      {current && (running || dismissedResultId !== current.id) && <div className="greeting-progress" role="status" aria-live="polite"><div className="greeting-progress-heading"><Space><MessageOutlined /><strong>{running ? '正在逐一打招呼' : current.status === 'interrupted' ? '打招呼任务已中断' : '本次打招呼结果'}</strong><Tag>{current.completed}/{current.total} 人</Tag></Space><Button size="small" type="link" onClick={() => { setHistoryId(current.id); setDetails(true); }}>查看明细</Button></div><div className="muted">{current.job_label}</div><Progress percent={current.total ? Math.round(current.completed / current.total * 100) : 0} size="small" showInfo={false} status={running ? 'active' : 'normal'} /><span>已发送 {current.sent} 人 · 已招呼跳过 {current.already} 人 · 其他 {current.completed - current.sent - current.already} 人{running ? ' · 切换页面后仍会继续，进度自动保存' : ''}</span></div>}
       <Modal title={<Space><MessageOutlined />确认批量打招呼</Space>} open={!!draft} width={700} onCancel={() => { if (!starting) setDraft(null); }} maskClosable={!starting} closable={!starting} cancelButtonProps={{ disabled: starting }} confirmLoading={starting} okButtonProps={{ disabled: running }} okText={`确认向 ${draft?.people.length ?? 0} 人打招呼`} cancelText="取消" onOk={() => void submit()}>
         <p className="greeting-confirm-job">对应岗位：<strong>{draft?.job_label}</strong></p>
         <Alert type="info" showIcon message="确认后将向以下人选发送 BOSS 打招呼，可能消耗平台招呼额度。" description="逐人核对 ID、姓名、基本信息和岗位；列表已刷新且无法找到的人会跳过。已招呼和发送结果未确认的人不会自动重发。" />

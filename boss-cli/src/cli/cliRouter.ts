@@ -173,8 +173,8 @@ function printHelp(): void {
       抓取指定职位详情并缓存到项目目录同名 .md
   boss recommend-jobs
       只读取推荐页岗位下拉选项，不读取候选人
-  boss recommend [岗位关键字] [--job-label <完整岗位标签>] [--limit 50] [--json] [--exclude-file <查重JSON文件>]
-      最多 50 人（默认 10）；--exclude-file 按姓名与基本信息跳过旧人，限量滚动找新人；不打招呼；--json 输出结构化快照
+  boss recommend [岗位关键字] [--job-label <完整岗位标签>] [--limit 50] [--json] [--exclude-file <查重JSON文件>] [--conditions-file <读取条件JSON文件>]
+      最多 50 人（默认 10）；--exclude-file 按姓名与基本信息跳过旧人，限量滚动找新人；--conditions-file 在列表阶段筛选；不打招呼；--json 输出结构化快照
   boss classify --targets <JSON数组> [--accept-incoming-resumes]
   boss download-attachment --target <JSON对象> --output <绝对PDF路径>
       每批核验最多 10 个会话，保留历史列表并滚动定位目标，读取双方消息与求简历状态；会打开会话，可能标记已读，不发送消息
@@ -593,13 +593,13 @@ export async function executeCommand(argv: string[]): Promise<string> {
     if (rest[0] === 'preview') {
       die('❌ 请改用: boss preview <姓名>（已不再使用 recommend preview）');
     }
-    if (Object.keys(opts).some((key) => !['limit', 'exclude-file', 'job-label'].includes(key)) || [...flags].some((flag) => flag !== 'json')) {
-      die('❌ 用法: recommend [岗位关键字] [--job-label <完整岗位标签>] [--limit 50] [--json] [--exclude-file <查重JSON文件>]');
+    if (Object.keys(opts).some((key) => !['limit', 'exclude-file', 'job-label', 'conditions-file'].includes(key)) || [...flags].some((flag) => flag !== 'json')) {
+      die('❌ 用法: recommend [岗位关键字] [--job-label <完整岗位标签>] [--limit 50] [--json] [--exclude-file <查重JSON文件>] [--conditions-file <读取条件JSON文件>]');
     }
     const jobKeyword = rest.join(' ').trim();
     const limit = opts.limit === undefined ? 10 : Number(opts.limit);
     if (!Number.isInteger(limit) || limit < 1 || limit > 50) die('❌ limit 必须是 1 到 50 的整数');
-    return implRecommend(jobKeyword || undefined, { limit, json: flags.has('json'), excludeFile: opts['exclude-file'], jobLabel: opts['job-label'] });
+    return implRecommend(jobKeyword || undefined, { limit, json: flags.has('json'), excludeFile: opts['exclude-file'], jobLabel: opts['job-label'], conditionsFile: opts['conditions-file'] });
   }
 
   if (cmd === 'classify') {

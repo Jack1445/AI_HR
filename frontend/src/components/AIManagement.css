@@ -27,6 +27,9 @@
 .ai-advanced .ant-collapse-header { font-size:12px; }
 .ai-small-note { font-size:11px; color:#88988d; line-height:1.8; margin-top:10px; }
 .ai-connected { margin-top:16px; color:#277b5e; background:#edf8f0; padding:12px; border-radius:8px; font-size:12px; }
+.ai-prompt-job { display:grid; gap:7px; margin:32px 0 18px; }
+.ai-prompt-job > span { font-size:12px; font-weight:600; color:#405b4e; }
+.ai-prompt-job > small { font-size:11px; color:#8a988e; line-height:1.6; }
 .ai-prompt textarea { background:#fafcfb; padding:16px; line-height:1.9; font-size:13px; }
 .ai-prompt-footer { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:28px; }
 .ai-prompt-footer > span { font-size:11px; color:#8b9a90; }

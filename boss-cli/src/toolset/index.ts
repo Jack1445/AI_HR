@@ -106,7 +106,7 @@ export async function implBossSearchSet(opts: {
   return runBossSearchSet(opts);
 }
 
-export async function implRecommend(jobKeyword?: string, options: { limit?: number; json?: boolean; excludeFile?: string; jobLabel?: string } = {}): Promise<string> {
+export async function implRecommend(jobKeyword?: string, options: { limit?: number; json?: boolean; excludeFile?: string; jobLabel?: string; conditionsFile?: string } = {}): Promise<string> {
   return runRecommend(jobKeyword, options);
 }
 

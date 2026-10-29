@@ -66,7 +66,7 @@ async def read_recommendations(payload: RecommendationReadRequest, svc: Discover
         raise HTTPException(status_code=409, detail='已有手动读取任务，请等待完成后再点击')
     async with manual_read_lock:
         try:
-            return await svc.read_recommendations(payload.job_key)
+            return await svc.read_recommendations(payload.job_key, payload.limit, payload.conditions)
         except LookupError as error:
             raise HTTPException(404, str(error)) from error
         except ValueError as error:

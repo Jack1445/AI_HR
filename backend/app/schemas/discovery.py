@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 CommunicationStatus = Literal['unknown', 'outgoing', 'incoming', 'mutual']
@@ -121,8 +121,38 @@ class RecommendationRecycleBin(BaseModel):
     candidates: list[RecycledRecommendation] = Field(default_factory=list)
 
 
+class ReadCondition(BaseModel):
+    field: Literal['name', 'baseInfo', 'expect', 'salary', 'highlights']
+    op: Literal['contains', 'not_contains', 'eq', 'neq', 'empty', 'not_empty']
+    value: str = Field(default='', max_length=100)
+
+    @model_validator(mode='after')
+    def require_value(self):
+        if self.op not in ('empty', 'not_empty') and not self.value.strip():
+            raise ValueError('读取条件的筛选值不能为空')
+        return self
+
+
+class ReadConditionGroup(BaseModel):
+    filters: list[ReadCondition] = Field(min_length=1, max_length=10)
+    conjunction: Literal['and', 'or'] = 'or'
+
+
+class ReadConditions(BaseModel):
+    groups: list[ReadConditionGroup] = Field(default_factory=list, max_length=10)
+    conjunction: Literal['and', 'or'] = 'and'
+
+    @model_validator(mode='after')
+    def limit_rules(self):
+        if sum(len(group.filters) for group in self.groups) > 30:
+            raise ValueError('读取条件最多 30 条')
+        return self
+
+
 class RecommendationReadRequest(BaseModel):
     job_key: str = Field(min_length=1, max_length=64)
+    limit: int = Field(default=RECOMMENDATION_READ_LIMIT, ge=1, le=50)
+    conditions: ReadConditions = Field(default_factory=ReadConditions)
 
 
 class RecommendationJobsSnapshot(BaseModel):
