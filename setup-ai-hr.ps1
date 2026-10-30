@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path -LiteralPath $PSScriptRoot).Path
 Set-Location -LiteralPath $projectRoot
 
@@ -13,9 +13,8 @@ foreach ($candidate in $candidates) {
     if (!$command) { continue }
     $arguments = $candidate.Arguments
     try {
-        $version = & $command.Source @arguments -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>$null
-        if ($LASTEXITCODE -eq 0 -and $version -match '^(\d+)\.(\d+)$' -and
-            ([int]$Matches[1] -gt 3 -or ([int]$Matches[1] -eq 3 -and [int]$Matches[2] -ge 11))) {
+        $version = & $command.Source @arguments -c 'import sys; print(sys.version_info[0]*100+sys.version_info[1])' 2>$null
+        if ($LASTEXITCODE -eq 0 -and $version -match '^\d+$' -and [int]$version -ge 311) {
             $pythonCommand = $command.Source
             $pythonArgs = $arguments
             break
