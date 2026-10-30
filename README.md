@@ -29,12 +29,12 @@ AI_HR/
 
 ## 环境和启动
 
-Windows 首次部署见 [环境依赖与部署清单](DEPLOY_WINDOWS.md)。要求 Python 3.11+、Node.js 20+、本机 Google Chrome 和 Git。`boss-cli/` 已包含在本仓库，普通 `git clone` 即可获得完整源码，不需要子模块。安装脚本会创建根目录 `.venv`、安装前后端依赖并构建 BOSS CLI。
+Windows 首次部署见 [环境依赖与部署清单](DEPLOY_WINDOWS.md)。下载项目后双击 `install-ai-hr.bat`，可检查并安装缺少的 Python 3.11+、Node.js 20+ 和 Google Chrome，再创建根目录 `.venv`、安装项目依赖并构建。`boss-cli/` 已包含在本仓库，不需要子模块。
 
 ```powershell
 git clone https://github.com/Jack1445/AI_HR.git
 Set-Location AI_HR
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\setup-ai-hr.ps1
+.\install-ai-hr.bat
 .\start-ai-hr.bat
 ```
 

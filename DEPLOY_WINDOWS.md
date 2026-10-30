@@ -5,7 +5,7 @@
 | 依赖 | 要求 | 用途 |
 | --- | --- | --- |
 | Windows | 10/11，PowerShell 5.1 或更新版本 | 启动脚本与 API Key 的 DPAPI 本机加密 |
-| Git | 可运行 `git --version` | 克隆和更新源码 |
+| Git | 使用 `git clone` / `git pull` 时需要 | 克隆和更新源码；下载 ZIP 后运行程序不需要 |
 | Python | 3.11 或更新版本；安装时加入 PATH 或安装 `py` 启动器 | FastAPI 后端和 SQLite 数据库 |
 | Node.js + npm | Node.js 20 或更新版本 | React 前端和内置 BOSS CLI |
 | Google Chrome | 当前稳定版 | 打开工作台以及登录 BOSS；BOSS CLI 也可自动检测 Edge |
@@ -15,16 +15,18 @@
 
 ## 新电脑首次部署
 
-在 PowerShell 中执行：
+下载项目后，直接双击根目录的 `install-ai-hr.bat`。它会检查 Python 3.11+、Node.js 20+ 和 Chrome；缺少时调用 Windows Package Manager（`winget`）安装，随后创建虚拟环境、安装项目依赖并构建。系统软件安装可能显示 Windows 权限确认；如电脑没有 `winget`，脚本会指出缺少的依赖。安装完成后双击 `start-ai-hr.bat`。
+
+如使用 Git 克隆项目，在 PowerShell 中执行：
 
 ```powershell
 git clone https://github.com/Jack1445/AI_HR.git
 Set-Location AI_HR
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\setup-ai-hr.ps1
+.\install-ai-hr.bat
 .\start-ai-hr.bat
 ```
 
-安装脚本创建 `.venv`，安装后端依赖，使用 `npm ci` 安装前端及内置 BOSS CLI 依赖，并构建两者。依赖安装成功后，双击 `start-ai-hr.bat` 即可启动；工作台地址为 <http://localhost:5173>，后端健康检查地址为 <http://localhost:8000/api/health>。启动脚本会占用本机 5173 和 8000 端口，并会关闭这两个端口上已有的监听进程；请先保存其他使用这些端口的工作。
+项目安装阶段使用 `npm ci` 安装前端及内置 BOSS CLI 依赖，并构建两者。依赖安装成功后，双击 `start-ai-hr.bat` 即可启动；工作台地址为 <http://localhost:5173>，后端健康检查地址为 <http://localhost:8000/api/health>。启动脚本会占用本机 5173 和 8000 端口，并会关闭这两个端口上已有的监听进程；请先保存其他使用这些端口的工作。
 
 首次读取 BOSS 时，在 BOSS CLI 打开的 Chrome 会话中人工登录。网页右上角的账号应与当前登录账号一致。若配置模型 API，在“AI 管理”页面重新填写 Base URL、API Key 并选择模型；原电脑的 DPAPI 加密密钥不能跨 Windows 用户或电脑复用。
 

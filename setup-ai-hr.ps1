@@ -2,10 +2,27 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path -LiteralPath $PSScriptRoot).Path
 Set-Location -LiteralPath $projectRoot
 
-$pythonCommand = if (Get-Command py -ErrorAction SilentlyContinue) { 'py' } elseif (Get-Command python -ErrorAction SilentlyContinue) { 'python' } else { throw '未找到 Python。请先安装 Python 3.11 或更新版本。' }
-$pythonArgs = if ($pythonCommand -eq 'py') { @('-3') } else { @() }
-& $pythonCommand @pythonArgs -c 'import sys; assert sys.version_info >= (3, 11), "需要 Python 3.11 或更新版本"'
-if ($LASTEXITCODE -ne 0) { throw 'Python 版本检查失败。请安装 Python 3.11 或更新版本。' }
+$pythonCommand = $null
+$pythonArgs = @()
+$candidates = @(
+    @{ Name = 'py'; Arguments = @('-3') },
+    @{ Name = 'python'; Arguments = @() }
+)
+foreach ($candidate in $candidates) {
+    $command = Get-Command $candidate.Name -ErrorAction SilentlyContinue
+    if (!$command) { continue }
+    $arguments = $candidate.Arguments
+    try {
+        $version = & $command.Source @arguments -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>$null
+        if ($LASTEXITCODE -eq 0 -and $version -match '^(\d+)\.(\d+)$' -and
+            ([int]$Matches[1] -gt 3 -or ([int]$Matches[1] -eq 3 -and [int]$Matches[2] -ge 11))) {
+            $pythonCommand = $command.Source
+            $pythonArgs = $arguments
+            break
+        }
+    } catch { }
+}
+if (!$pythonCommand) { throw '未找到 Python 3.11 或更新版本。请先运行 install-ai-hr.bat。' }
 
 $nodeCommand = Get-Command node -ErrorAction SilentlyContinue
 $npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
